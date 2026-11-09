@@ -1,0 +1,43 @@
+# 依赖（由 npm ci 还原，不提交）
+node_modules/
+
+# 运行时状态与 Store（含 prompt、结果、锁；属于本机私有数据）
+var/
+state-v2.json
+task-store.json
+task-store.lock
+store-v2.lock
+*.migration.lock
+*.lock.recovery
+
+# 机器相关配置（绝对路径因人而异；复制 config/windows.example.json）
+config/windows.json
+config/local.json
+config/*.local.json
+
+# 密钥与凭据（本项目不应持有 DSH API key，但防止误提交）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+secrets/
+.credentials*
+
+# 临时文件与备份
+*.tmp
+*.bak
+*.bak-*
+*.log
+npm-debug.log*
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tsbuildinfo
+coverage/
+.nyc_output/
