@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "command": "C:\\Program Files\\DeepSeek Harness\\DeepSeek Harness.exe",
+  "args": [
+    "--expose-internals",
+    "C:\\Program Files\\DeepSeek Harness\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-desktop-host\\lib\\cli.js",
+    "--profile",
+    "acp"
+  ],
+  "env": { "ELECTRON_RUN_AS_NODE": "1" },
+  "cwd": "C:\\path\\to\\fish_abil_ext",
+  "dataDirectory": "./var/tasks-v2",
+  "startupTimeoutMs": 30000,
+  "timeoutMs": 30000,
+  "taskTimeoutMs": 300000
+}
