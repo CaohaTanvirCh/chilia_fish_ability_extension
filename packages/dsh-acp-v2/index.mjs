@@ -8,6 +8,8 @@ function text(s,name){if(typeof s!=='string'||!s.trim())throw fault('INVALID_INP
 function duration(n){if(!Number.isSafeInteger(n)||n<=0||n>2147483647)throw fault('INVALID_TIMEOUT','Duration must fit a positive Node timer');return n;}
 function bounded(p,ms){let timer;return Promise.race([p,new Promise((_,reject)=>{timer=setTimeout(()=>reject(fault('TIMEOUT','Operation deadline exceeded')),ms)})]).finally(()=>clearTimeout(timer));}
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const requiredTaskProjection=['status','latestExecutionId','activeExecutionId','unresolvedExecutionIds','sessionId','result','duplicateExecutionRisk','integrityAlerts'];
+function assertTaskProjection(t){for(const key of requiredTaskProjection)if(!Object.hasOwn(t,key))throw fault('INVALID_TASK_PROJECTION',`Task is missing required projection field ${key}`);if(!Array.isArray(t.unresolvedExecutionIds)||!Array.isArray(t.integrityAlerts)||typeof t.duplicateExecutionRisk!=='boolean')throw fault('INVALID_TASK_PROJECTION','Task projection has invalid field types');}
 const diagnostics=items=>items.slice(-32).map(item=>Buffer.byteLength(JSON.stringify(item))<=1024?item:{code:item.code??'DIAGNOSTIC',message:Buffer.from(item.message??item.detail??'').subarray(0,600).toString('utf8')});
 
 /** v2 executor: one official ACP connection per attempt; durable state through public Store only. */
@@ -58,8 +60,7 @@ export class DshAcpExecutor {
   text(input.requestKey,'requestKey');text(input.prompt,'prompt');const inputHash=hash({kind:'execute',taskId,prompt:input.prompt,acknowledgeUnknownExecutionIds:input.acknowledgeUnknownExecutionIds??[]});
   const previous=this.state().requests.find(r=>r.key===input.requestKey);if(previous){if(previous.inputHash!==inputHash)throw fault('IDEMPOTENCY_CONFLICT','requestKey conflict');return this.execution(previous.executionId);}
   const t=this.task(taskId);if(t.lifecycle!=='open')throw fault('TASK_CLOSED','Task closed');if(this.cancelGates.has(taskId)||this.gatesClosing?.has(taskId)||[...this.operations.values()].some(o=>o.taskId===taskId))throw fault('BUSY','Previous execution/cleanup/cancellation not settled');
-  for(const key of ['status','latestExecutionId','activeExecutionId','unresolvedExecutionIds','sessionId','result','duplicateExecutionRisk','integrityAlerts'])if(!Object.hasOwn(t,key))throw fault('INVALID_TASK_PROJECTION',`Task is missing required projection field ${key}`);
-  if(!Array.isArray(t.unresolvedExecutionIds)||!Array.isArray(t.integrityAlerts)||typeof t.duplicateExecutionRisk!=='boolean')throw fault('INVALID_TASK_PROJECTION','Task projection has invalid field types');
+  assertTaskProjection(t);
   if(this.operations.size>=this.maxConcurrent)throw fault('BUSY','Execution concurrency limit');
   const unknown=t.unresolvedExecutionIds;if(unknown.some(id=>!input.acknowledgeUnknownExecutionIds?.includes(id)))throw fault('UNKNOWN_EXECUTION','Explicitly acknowledge every unresolved execution; old Session will not be reused');
   const openAlerts=t.integrityAlerts.filter(alert=>!alert?.acknowledgedAt);
@@ -72,7 +73,17 @@ export class DshAcpExecutor {
   const next=this.project({...t,latestExecutionId:e.executionId},[...this.state().executions,e]);
   this.commit({admission:true,tasks:[next],executions:[e],requests:[{key:input.requestKey,inputHash,taskId,executionId:e.executionId}],events:[{type:'execution.created',taskId,executionId:e.executionId}]});this.launch(e.executionId);return e;
  });}
- async dispatchQueued(executionId){await this.start();const e=this.execution(executionId);return this.gate(e.taskId,()=>{if(this.operations.size>=this.maxConcurrent)throw fault('BUSY','Execution concurrency limit');if(e.status!=='queued'||e.submission!=='not_started')throw fault('NOT_QUEUED','Not safely unsent');if(this.task(e.taskId).lifecycle!=='open')throw fault('TASK_CLOSED','Closed');if([...this.operations.values()].some(o=>o.taskId===e.taskId))throw fault('BUSY','Task busy');this.launch(executionId);return e;});}
+ async dispatchQueued(executionId){
+  await this.start();const e=this.execution(executionId);
+  return this.gate(e.taskId,()=>{
+   const t=this.task(e.taskId);assertTaskProjection(t);
+   if(this.operations.size>=this.maxConcurrent)throw fault('BUSY','Execution concurrency limit');
+   if(e.status!=='queued'||e.submission!=='not_started')throw fault('NOT_QUEUED','Not safely unsent');
+   if(t.lifecycle!=='open')throw fault('TASK_CLOSED','Closed');
+   if([...this.operations.values()].some(o=>o.taskId===e.taskId))throw fault('BUSY','Task busy');
+   this.launch(executionId);return e;
+  });
+ }
  launch(executionId){
   const e=this.execution(executionId);const op={executionId,taskId:e.taskId,transport:this.transportFactory(),phase:'setup',pending:'',bytes:0,quarantine:[],generation:randomUUID(),cancelPromise:null,bindingId:null,sessionClosed:false};
   op.abort=new Promise((_,reject)=>op.reject=reject);op.abort.catch(()=>{});op.request=(m,p,ms)=>Promise.race([op.transport.request(m,p,ms),op.abort]);this.operations.set(executionId,op);

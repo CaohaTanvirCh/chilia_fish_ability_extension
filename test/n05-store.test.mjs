@@ -90,6 +90,31 @@ test('Executor refuses a task projection missing result before commit or transpo
   } finally { await x.stop(); }
 });
 
+test('Executor dispatchQueued refuses a task projection missing result before commit or transport', async t => {
+  const dir = fixture(t); seed(dir); const store = new ExecutionStore(dir).open(); const snapshot = store.snapshot(); store.close();
+  const task = snapshot.tasks[0];
+  Object.assign(task, {status: 'queued', activeExecutionId: 'e1', unresolvedExecutionIds: [], result: '', sessionId: null, duplicateExecutionRisk: false, integrityAlerts: []});
+  Object.assign(snapshot.executions[0], {status: 'queued', submission: 'not_started', bindingId: null, result: '', resultIntegrity: 'partial', completionEvidence: null});
+  snapshot.bindings = [];
+  delete task.result;
+  assert.equal(Object.hasOwn(task, 'result'), false);
+  const before = structuredClone(snapshot);
+  let commits = 0, transports = 0;
+  const fake = {open() { return this; }, close() {}, snapshot() { return structuredClone(snapshot); }, healthCheck() { return {healthy: true}; }, commit() { commits++; throw new Error('must not commit'); }};
+  const x = new DshAcpExecutor({store: fake, transportFactory: () => { transports++; throw new Error('must not launch'); }});
+  await x.start();
+  try {
+    await assert.rejects(x.dispatchQueued('e1'), {code: 'INVALID_TASK_PROJECTION'});
+    assert.equal(commits, 0);
+    assert.equal(transports, 0);
+    assert.equal(x.operations.size, 0);
+    const after = fake.snapshot();
+    assert.deepEqual(after.tasks, before.tasks);
+    assert.deepEqual(after.executions, before.executions);
+    assert.equal(after.executions.length, before.executions.length);
+  } finally { await x.stop(); }
+});
+
 test('Executor refuses a task projection missing unresolvedExecutionIds instead of treating it as empty', async t => {
   const dir = fixture(t); seed(dir); const store = new ExecutionStore(dir).open(); const snapshot = store.snapshot(); store.close();
   delete snapshot.tasks[0].unresolvedExecutionIds;
