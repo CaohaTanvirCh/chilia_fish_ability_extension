@@ -1,8 +1,10 @@
 # Phase 2.1A Design Review：Identity & Workspace 一致性审查
 
-状态：**Design Review Report / Conditional Design Pass / Implementation Not Started**
+状态：**Design Review Report / Conditional Design Pass / Phase 2.1A.1 Clarification Reviewed / Implementation Not Started**
 
 日期：2026-11-10（Asia/Hong_Kong）
+
+本轮复核：**Phase 2.1A.1 docs-only refinement**（Windows root path boundary、Local Bootstrap scope、Membership stored/effective state）。
 
 审查对象：`docs/phase-2.1A-identity-workspace-design.md`
 
@@ -11,7 +13,7 @@
 - Phase 2.0 冻结基线：`be36ba7`（AD-01 至 AD-14）
 - Phase 2.0.1：`ad736e5`
 - Phase 2.0.2：`4581990`
-- 当前 Phase 1.1 代码：`packages/contracts/v2.d.ts`、`packages/task-store-v2/index.mjs`、`packages/dsh-acp-v2/index.mjs`、`apps/companion-hub/main.mjs`、`scripts/windows-config.mjs`
+- 当前 Phase 1.1 代码：`packages/contracts/v2.d.ts`、`packages/task-store-v2/index.mjs`、`packages/dsh-acp-v2/index.mjs`、`packages/windows-paths/index.mjs`、`apps/companion-hub/main.mjs`、`scripts/windows-config.mjs`
 
 审查性质：只读文档与代码的一致性复核。没有实现、没有运行权限测试、没有修改 Contracts/Store/Executor/ACP Transport/配置/测试。本文不是实现验收，也不是外部安全审计。
 
@@ -24,24 +26,28 @@
 Phase 2.1A 设计文档可以作为 Contracts v3、Store v3、API v3 的设计输入，但必须满足以下条件：
 
 1. 不把当前 v2 的 `commit(expectedRevision, changes)` 当作授权提交接口；实现前必须先有 `commitAuthorized` 的 v3 契约。
-2. 关闭 P1：批量撤权事务容量、过期物化、Ownerless 恢复、本地 stdio 信任边界。
-3. Phase 2.1B 仍不开始；Phase 2.1A 也不因本文通过而进入代码实现。
+2. 关闭 P1：批量撤权事务容量、过期物化、Ownerless 恢复、本地 stdio 信任边界、Windows root path enforcement。
+3. 实现前冻结 IW-09/10/11 的契约：path guard 能力级别、Local Bootstrap 方法表、Membership effective 公式与 history。
+4. Phase 2.1B 仍不开始；Phase 2.1A 也不因本文通过而进入代码实现。
 
-未发现 AD-01 至 AD-14 的未解释冲突。发现的主要问题不是“设计方向错误”，而是**实现前置条件和边界尚未被工程化**，尤其是撤权/过期的时间与事务边界。
+未发现 AD-01 至 AD-14 的未解释冲突。发现的主要问题不是“设计方向错误”，而是**实现前置条件和边界尚未被工程化**，尤其是路径检查与使用之间的竞态、撤权/过期的时间与事务边界。
 
 ### 0.1 问题分级
 
 | 级别 | 数量 | 说明 |
 |---|---:|---|
 | P0 | 0 个设计冲突；1 个实现门槛 | 当前 v2 Store/API 不能承载授权提交，必须先做 v3；这是门槛，不是本文设计矛盾 |
-| P1 | 4 | 批量撤权容量、过期物化、Ownerless 恢复、本地 bootstrap 信任边界 |
-| P2 | 7 | Agent Admin、邀请投递、审计拒绝限流、错误码、命名、未来二次委托、AD-02 历史引用措辞 |
+| P1 | 5 | 批量撤权容量、过期物化、Ownerless 恢复、本地 bootstrap 信任边界、Windows root path enforcement |
+| P2 | 8 | Agent Admin、邀请投递、审计拒绝限流、错误码、命名、未来二次委托、AD-02 历史引用措辞、MembershipRevision schema/retention |
+
+> Phase 2.1A.1 消除了 Local Bootstrap 的 `workspace:create` 冲突，并把 Membership 语义写成可计算公式；但本地信任边界和 path enforcement 仍不能由当前架构完全关闭。
 
 ### 0.2 审查范围限制
 
 - 没有真实多 Principal、多 Workspace 或 Delegation 运行测试，因为当前代码没有这些实体。
-- 没有对真实 DSH ACP 做撤权/dispatch 竞态注入；第 8 节的结论来自现有 Phase 1.1 证据边界和代码路径。
-- 没有验证 Windows 文件 ACL、进程树终止或 fencing；这些仍归 AD-11/AD-13。
+- 没有对真实 DSH ACP 做撤权/dispatch 竞态注入；第 4.2 节的结论来自现有 Phase 1.1 证据边界和代码路径。
+- 没有验证 Windows 文件 ACL、reparse point、handle-relative 操作、进程树终止或 fencing；这些仍归 AD-11/AD-13 以及 IW-09 的实现阶段。
+- 没有真实验证 Junction 替换、UNC/网络卷、大小写别名或 `realpath` 与 `open` 之间的竞态；IW-09 的结论是设计边界，不是已实现的防护。
 - “独立”指基于当前仓库代码和冻结 AD 的独立复核，不代表外部第三方审计。
 
 ---
@@ -51,7 +57,7 @@ Phase 2.1A 设计文档可以作为 Contracts v3、Store v3、API v3 的设计�
 | AD | 核对点 | 结论 | 证据/备注 |
 |---|---|---|---|
 | AD-01 | Task goalStatus/lifecycle/executionSummary 分离；本设计不重新定义 | 通过 | 设计第 13.2 节；没有把 Workspace/Principal 状态塞进 Task goalStatus |
-| AD-02 | Principal/Workspace/Membership/Delegation 一级实体；owner/createdBy/requestedBy/controller 分离 | 通过，带安全收紧与生命周期例外 | 设计第 4/5/6 节；Agent 不能 Owner/Admin 是额外限制；主体 disabled/deleted 后 owner/requestedBy 仅保留审计引用，必须无有效权限且 controller frozen |
+| AD-02 | Principal/Workspace/Membership/Delegation 一级实体；owner/createdBy/requestedBy/controller 分离 | 通过，带安全收紧与生命周期例外 | 设计第 4/5/6/19.3 节；Agent 不能 Owner/Admin；Membership stored/effective 分离；主体 disabled/deleted 后 owner/requestedBy 仅保留审计引用 |
 | AD-03 | private Task 可见性；Agent 同时满足自身、用户、委托权限 | 通过 | 设计第 9.2 节；private 读取矩阵和 6.4 交集公式 |
 | AD-04 | Artifact 独立授权；Task 可见性只在创建时提供默认值 | 通过 | 设计第 9.4 节；不按当前 Task 角色动态授权 |
 | AD-05 | Store v3/API v3；v2 只读迁移；不猜测 legacy | 通过 | 设计第 14.4 节；迁移必须显式 workspace/owner |
@@ -60,8 +66,8 @@ Phase 2.1A 设计文档可以作为 Contracts v3、Store v3、API v3 的设计�
 | AD-08 | 撤销/过期/成员失效冻结 Controller；运行中 Execution 继续 | 通过，过期物化有 P1 | 设计 4.4/6.7/11.4；撤销事务原子冻结；过期逻辑立即拒绝但持久化物化可能延迟 |
 | AD-09 | Event workspace/system scope；每次重新授权 | 通过 | 设计 7.5、11.5；旧 cursor 不是凭证 |
 | AD-10 | requestKey 五元组 | 通过 | 设计 7.4、12.1；重放先重新授权 |
-| AD-11 | 多 Execution 数据模型与 Workspace mutex 分离 | 通过 | 设计 5.1、9.3；不改变 AD-11 的租约语义 |
-| AD-12 | 授权检查与状态写入同一 Store commit | 通过 | 设计 7.3/7.4；`commitAuthorized` 是硬约束 |
+| AD-11 | 多 Execution 数据模型与 Workspace mutex 分离 | 通过（root 仅 cooperative） | 设计 5.1、9.3、19.1；不改变 AD-11 的租约语义；Workspace root 不是 OS 安全边界 |
+| AD-12 | 授权检查与状态写入同一 Store commit | 通过 | 设计 7.3/7.4；`commitAuthorized` 是硬约束；Membership 使用 effective 计算而非缓存 |
 | AD-13 | Lease 强制释放需要进程终止/fencing/隔离；否则 quarantine | 通过 | 设计 9.3；身份层不能绕过 evidence |
 | AD-14 | interrupted 与 unknown 都进入 awaiting_decision/风险确认 | 通过（不改动） | 设计 13.2；身份撤销不创建新 Execution、不清除风险 |
 
@@ -118,7 +124,7 @@ commitAuthorized(context, operation, target, input)
 | 单 Store 所有者 | 是 | `commitAuthorized` 仍在单 Store 临界区；没有第二写入者 |
 | 原子 commit | 是 | 身份/成员/委托与业务状态同一事务 |
 | 事件单调序列 | 是 | 身份/成员/委托事件进入统一 sequence；不重写历史 |
-| 不承诺 exactly-once | 是 | 第 8 节明确 commit 与外部 transport 的窗口 |
+| 不承诺 exactly-once | 是 | 第 4.2 节明确 commit 与外部 transport 的窗口 |
 | 不伪造终态 | 是 | 撤权不把 running 改 cancelled；unknown 保持 unknown |
 | requestKey 幂等 | 是 | AD-10 五元组；重放先授权 |
 | `acknowledgedBy` 不可信 | 是 | 设计要求从 context 生成；当前 v2 仍接受字符串，属于未实现差距 |
@@ -264,6 +270,26 @@ Phase 1.1 的 `startExecution` 会检查 `unresolvedExecutionIds` 并要求显�
 
 风险点：已经推送/返回的数据不能追溯撤回；设计应明确 read API 的固有边界，不能声称“撤权后旧客户端看不到已缓存内容”。P2 文档边界。
 
+### 4.7 Workspace 路径 TOCTOU
+
+IW-09 明确 `realpath` + 字符串前缀不足以证明 containment：
+
+```text
+检查 root/subdir
+  -> 检查通过
+  -> 目录被替换为 junction / root 被替换
+  -> 按字符串路径 open/write
+```
+
+当前 `packages/windows-paths/index.mjs` 只有 `path.win32.normalize`，没有 file ID、reparse point 或 handle-relative/no-follow 检查；`DshAcpExecutor` 只把 cwd 交给 `session/new`，不约束执行器的绝对路径。因此：
+
+- Hub 自己必须按 IW-09 做身份复验、逐组件 no-follow、失败关闭；
+- 在 native helper/OS sandbox 实现前，只能声明 `workspaceBoundaryEnforcement=cooperative`；
+- 发现 identity/reparse 异常必须 `quarantineState=quarantined`，不能只释放 Lease 后继续写；
+- 这是 **P1-05**，不能靠文档措辞关闭。
+
+审查确认：设计没有把 `realpath`+prefix 或 `path.relative` 当作安全隔离；这一点通过。但当前架构没有足够句柄/进程隔离能力，必须保留限制声明。
+
 ---
 
 ## 5. Bootstrap 身份安全边界
@@ -296,6 +322,7 @@ Phase 1.1 的 `startExecution` 会检查 `unresolvedExecutionIds` 并要求显�
 - 不接受第二个 stdio 客户端；
 - 不在 `ready` 中返回 rootPath；
 - 不把 bootstrap Principal 当作“系统管理员”跨 Workspace 使用。
+- Phase 2.1A.1 / IW-10 进一步确认：Local Bootstrap 没有 `workspace:create`；`workspaceScope=single` 是硬 allowlist，不能通过配置开关恢复全局创建。
 
 ### 5.3 Ownerless 恢复
 
@@ -370,7 +397,15 @@ Phase 1.1 的 `startExecution` 会检查 `unresolvedExecutionIds` 并要求显�
 - **问题**：本地 stdio 不能证明调用者是某个真实用户；同机进程可冒充 bootstrap Principal。
 - **影响**：不能把本地模式宣传为多用户安全认证。
 - **要求**：运维文档明确边界；不暴露网络；单客户端；配置/日志脱敏；未来远程认证单独设计。
-- **状态**：接受为 Phase 2.1A 边界，但必须在实现/部署文档中显式声明。
+- **Phase 2.1A.1 更新**：IW-10 已移除 Local Bootstrap 的 `workspace:create`，解决“本地连接默认全局创建”的权限越界；本机信任边界仍保留。
+- **状态**：**部分解决**（权限范围已收紧；本机信任边界仍待部署文档/未来认证处理）。
+
+#### P1-05 Windows root path enforcement
+
+- **问题**：`packages/windows-paths/index.mjs` 只有 `path.win32.normalize`；没有 file ID、reparse 检测或 handle-relative/no-follow；DSH 子进程仍以当前 OS 用户访问任意路径。
+- **影响**：`rootPath`/`cwd` 不能阻止 junction 替换、UNC/大小写别名或执行器绝对路径逃逸；不能把 Workspace 宣传为文件系统沙箱。
+- **要求**：实现 IW-09；在 native helper 或 OS sandbox 落地前，必须标记 `workspaceBoundaryEnforcement=cooperative`，检测到异常时 quarantine。
+- **状态**：**未关闭**；这是 Phase 2.1A 实现前必须决定的能力级别。
 
 ### 6.3 P2
 
@@ -382,7 +417,8 @@ Phase 1.1 的 `startExecution` 会检查 `unresolvedExecutionIds` 并要求显�
 | P2-04 | 错误码名称是建议值 | Contracts v3 统一，不能不同 API 不同语义 |
 | P2-05 | `WorkspaceMember`/`Membership` 命名未统一 | Contracts 评审时统一，不影响语义 |
 | P2-06 | 二次委托仅保留字段 | Phase 2.1A 必须拒绝；未来新增 AD 后才可实现 |
-| P2-07 | AD-02 的 active 成员措辞与 disabled/deleted 历史引用 | Contracts v3 注释/校验明确“赋值时 active、历史引用无权限” |
+| P2-07 | AD-02 的 active 成员措辞与 disabled/deleted 历史引用 | **部分解决**：IW-11 已明确 stored/effective + 历史引用；Contracts v3 仍需注释/校验 |
+| P2-08 | `MembershipRevision` 的字段、保留期和压缩策略 | Store v3 设计时冻结；append-only 语义已定，容量策略未定 |
 
 ---
 
@@ -399,15 +435,64 @@ Phase 1.1 的 `startExecution` 会检查 `unresolvedExecutionIds` 并要求显�
 
 ### 7.2 仍需确认的假设
 
-- 本地 bootstrap 只支持 User；本地 Agent 连接不在 Phase 2.1A。
+- 本地 bootstrap 只支持 User；本地 Agent 连接不在 Phase 2.1A；Local Bootstrap 没有 `workspace:create`。
 - `maxTasks=1000` 是批量撤权的现实上限；如果 v3 改变上限，需要重审。
 - Hub 服务端时钟是授权时间的权威；客户端时间不参与。
 - `authorizationRevision` 全局单调，宁可让无关写入 stale，也不放宽原子性。
+- Workspace root 是 cooperative boundary；真正的 OS 隔离/路径 fencing 未实现。
+- Membership 的 effective 状态是计算值；`MembershipRevision` 是 append-only 审计，不替代当前投影。
 - Phase 2.1B 仍负责 Task/Artifact 的详细字段、可见性迁移和 `selectedExecutionId`。
 
 ---
 
-## 8. 最终判断
+## 8. Phase 2.1A.1 补充复核
+
+### 8.1 三项补充的核对结果
+
+| 补充 | 核对结果 | 审查意见 |
+|---|---|---|
+| IW-09 Windows root path | 通过（设计层） | 已区分 lexical path、file identity、process enforcement；明确 UNC/大小写/reparse/TOCTOU；没有把 `realpath`+prefix 当解决方案；明确 cooperative 与 OS-enforced 的差距 |
+| IW-10 Local Bootstrap scope | 通过（设计层） | 已明确 `workspaceScope=single` 是硬 allowlist，Local Bootstrap 没有 `workspace:create`；离线 provisioning 与未来独立管理上下文分开；不修改现有配置格式 |
+| IW-11 Membership stored/effective | 通过（设计层） | 已明确 stored `active/revoked` 与 effective `active/suspended/revoked`；显式 revoked 不因 Principal 恢复 active 而复活；append-only `MembershipRevision` 保留历史；授权使用 effective |
+
+### 8.2 原有发现的处置状态
+
+| 原发现 | 状态 | 说明 |
+|---|---|---|
+| P0-GATE：v2 不能承载授权提交 | **仍待处理** | 当前 Store/API 仍未实现 `commitAuthorized`；Phase 2.1A 实现不开始 |
+| P1-01 批量撤权事务容量 | **仍待处理** | 本轮未改变；Store v3 仍需容量/事件合并方案 |
+| P1-02 过期物化 | **仍待处理** | 本轮未改变；仍需 reconciler/启动扫描/effective control 测试 |
+| P1-03 Ownerless 恢复 | **仍待处理** | 本轮未改变；`system:recovery` 入口/审计未定义 |
+| P1-04 本地 bootstrap 信任边界 | **部分解决** | IW-10 关闭了 `workspace:create` 越界；本机 stdio 信任边界仍保留 |
+| P1-05 Windows root path enforcement | **新发现/未关闭** | IW-09 已定义 cooperative 边界和 fail-closed，但 native helper/OS sandbox 不存在；实现前必须定能力级别 |
+| P2-01 Agent 不能 Admin | **仍待处理（设计收紧）** | 未来如放开，新增 AD |
+| P2-02 邀请只支持已存在 Principal | **仍待处理** | 外部账户绑定未定义 |
+| P2-03 审计拒绝限流 | **仍待处理** | API v3 设计时冻结 |
+| P2-04 错误码 | **部分解决** | 新增 path/workspace-create 错误；名称仍待 Contracts v3 统一 |
+| P2-05 命名 | **仍待处理** | Contracts 评审统一 |
+| P2-06 二次委托 | **仍待处理** | Phase 2.1A 保持禁止；未来新增 AD |
+| P2-07 AD-02 历史引用措辞 | **部分解决** | IW-11 已明确 stored/effective/history；Contracts 注释仍待补 |
+| P2-08 `MembershipRevision` 容量 | **新发现** | append-only 语义已定；保留期/压缩/上限未定 |
+
+### 8.3 本轮新增风险与限制
+
+1. **Path guard 仍不存在**：设计描述了 file ID/reparse/handle-relative，但当前代码只有字符串 normalize。不能在实现前对外宣称已隔离。
+2. **DSH 子进程无沙箱**：即使 Hub 的路径检查正确，执行器仍以当前 OS 用户访问任意路径；`workspaceBoundaryEnforcement=cooperative` 必须如实显示。
+3. **UNC/网络卷被拒绝**：这是安全默认，不是通用能力；需要网络 Workspace 的部署必须等独立 AD/实现。
+4. **Node 核心能力不足**：不能仅用 `fs.realpath`/`lstat`/`startsWith` 实现 IW-09；需要 native helper 或 OS sandbox。未来实现必须先做能力探测。
+5. **MembershipRevision 增长**：append-only 解决审计覆盖问题，但会带来容量增长；Store v3 需要上限/归档策略。
+6. **Local Bootstrap 不能创建 Workspace**：新增 Workspace 需要离线 provisioning；这会降低本地便利性，但避免本地连接获得全局权限。
+7. **effective Membership 是计算值**：必须防止缓存/投影把 `suspended` 写成 `revoked`，或把 `revoked` 在 re-enable 时复活。
+
+### 8.4 必须在 Phase 2.1B 或实现阶段继续处理
+
+- Contracts v3：`MembershipRevision`、effective status、path errors、`workspaceBoundaryEnforcement` 类型。
+- Store v3：effective Membership 计算、`MembershipRevision` 容量、rootIdentity 持久化、path guard 失败关闭。
+- API v3：Local Bootstrap 方法表、管理上下文、`WORKSPACE_CREATE_NOT_ALLOWED`、路径错误。
+- Phase 2.1B：Artifact import/export、`workingDirectory`、workspaceSnapshot 与 IW-09 的对接。
+- 实现测试：Junction/symlink 替换、UNC/大小写别名、root identity 变化、显式 revoked + re-enable、Local Bootstrap 创建拒绝。
+
+## 9. 最终判断
 
 Phase 2.1A 设计在以下意义上通过：
 
@@ -417,13 +502,14 @@ Phase 2.1A 设计在以下意义上通过：
 - 读路径有统一过滤和跨 Workspace 拒绝；
 - 撤权/过期/成员失效不会伪造 Execution 终态；
 - bootstrap 不提供匿名 fallback；
+- IW-09/10/11 已给出可执行结论，且没有把 cooperative path guard 冒充为 OS 隔离；
 - 与 AD-01 至 AD-14 没有未解释冲突。
 
 但不能判定为“可实现完成”：
 
 - 当前 v2 没有承载能力；
-- P1 的批量撤权、过期物化、Ownerless 恢复和本地信任边界仍需工程化；
+- P1 的批量撤权、过期物化、Ownerless 恢复、本地信任边界和 Windows root path enforcement 仍需工程化；
 - Phase 2.1B 仍被冻结；
-- 本轮没有代码、测试或真实多用户证据。
+- 本轮没有代码、测试或真实多用户/路径攻击证据。
 
 **建议：接受为 Phase 2.1A 设计基线，进入 Contracts v3/Store v3/API v3 设计评审；不开始 Phase 2.1A 实现，不进入 Phase 2.1B。**

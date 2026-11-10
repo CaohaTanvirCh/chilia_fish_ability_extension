@@ -16,6 +16,8 @@
 
 本文件不是 Phase 2.1A 的实现验收，也不把下列设计描述成仓库已有能力。当前仓库仍然是 Phase 1.1 的单 stdio、无 Principal、无 Workspace 模型；本文件定义的是 v3 的目标边界。
 
+> **Phase 2.1A.1 补充：** 第 19 节新增 IW-09（Windows Workspace root 路径边界）、IW-10（Local Bootstrap 权限范围）、IW-11（Membership stored/effective 状态）。第 19 节与前面段落冲突时以第 19 节为准；本轮仍只改文档，不实现。
+
 ---
 
 ## 0. 结论摘要
@@ -39,6 +41,9 @@ Phase 2.1A 需要先回答四个不可合并的问题：
 | IW-06 | Store commit 成功是命令被接受的线性化点；撤权不追溯取消已经提交的 `dispatch_intent`，但禁止撤权后的新控制命令 |
 | IW-07 | 本地 stdio 只允许显式 bootstrap User + 单一受限 Workspace；无匿名 fallback，不把本地 stdio 当成多用户安全认证 |
 | IW-08 | Task/Artifact 的详细字段与生命周期仍归 Phase 2.1B；本阶段只冻结身份、成员、委托、授权上下文及其对 Task/Execution 的约束 |
+| IW-09 | Windows Workspace root 的字符串路径不是文件系统身份；Phase 2.1A 只提供 cooperative path guard，不宣称 OS 级隔离；无法验证时失败关闭/quarantine |
+| IW-10 | Local bootstrap 永远没有 `workspace:create`；Workspace 只由离线 provisioning 或未来独立管理上下文创建；不改变现有 bootstrap 配置格式 |
+| IW-11 | Membership 的 stored state 与 effective state 分离；授权只看 effective；Principal 恢复 active 不复活显式 revoked Membership；用 append-only history 保留审计 |
 
 本文件的推荐结论是 **Design Pass with Conditions**：可以作为 Contracts v3、Store v3、API v3 的设计输入，但实现前必须关闭第 16 节列出的 P1 条件，且不得据此声称 Phase 2.1A 已实现。
 
@@ -211,7 +216,7 @@ Principal:
 7. 不取消已经在运行的 Execution；不伪造 `cancelled`；
 8. 不自动转移 Task owner、Workspace owner 或 Artifact owner。
 
-Membership 记录本身不删除，但 `Principal.status` 使 Membership 立即无效；重新启用后 Membership 可以恢复，但 Delegation 不自动恢复。
+Membership 的 **stored state 不变**（仍为 `active`），但 `Principal.status` 使其 **effective state 变为 suspended**；重新启用后，只有本来就 `stored=active` 的 Membership 自动恢复 effective 权限。显式 `revoked` 的 Membership 不会被重新启用复活（详见 IW-11 / 19.3）。Delegation 不自动恢复，Controller 也不会因 Principal enable 自动 unfreeze；必须显式转移/恢复。
 
 ### 4.5 删除语义
 
@@ -236,7 +241,7 @@ Membership 记录本身不删除，但 `Principal.status` 使 Membership 立即�
 | running Execution | 继续到真实终态或 unknown | 继续到真实终态或 unknown |
 | Artifact owner | 保留；访问受 principal 状态阻断 | 保留；需要显式转移 |
 | ArtifactGrant | 受 principal 状态立即阻断；不自动删除 | 撤销 |
-| Membership | 保留但无效；可重新启用后恢复 | 撤销 |
+| Membership | stored 保留为 active；effective suspended；重新启用后恢复 | 删除事务把 stored 置为 revoked；不可恢复 |
 | 旧 Session/Cursor | 下一次请求 `AUTHORIZATION_REVOKED` | 同样拒绝；连接关闭 |
 
 ---
@@ -253,9 +258,12 @@ Workspace:
   ownerPrincipalId            User principal，必须与唯一 owner Membership 一致
   rootRef                     string；对外可见的逻辑根引用，不暴露本机路径
   rootPath                    string；仅服务端使用，绝不返回 API/事件/日志
+  rootIdentity                见 19.1；volumeSerial/fileId/finalPath/observedAt，仅服务端
+  workspaceBoundaryEnforcement  cooperative | os-enforced；Phase 2.1A 只允许 cooperative
+  quarantineState             normal | quarantined；路径/root identity 异常时置 quarantined
   isolationPolicy             mutex | git-worktree | directory-copy
   governanceState              normal | ownerless_locked
-  policyVersion                integer；状态、owner、root、isolationPolicy 变化递增
+  policyVersion                integer；状态、owner、root、isolationPolicy、quarantineState 变化递增
   createdByPrincipalId        string
   createdAt / updatedAt
   archivedAt / deletedAt       ISO-8601 | null
@@ -264,19 +272,22 @@ Workspace:
 
 - `rootPath` 在 Store 中是服务端字段；API 只返回 `rootRef`。Store 备份、日志和错误消息都必须脱敏。
 - 新建 Workspace 必须有显式 root，不能默认使用 Hub 进程 cwd、用户主目录或已有共享目录。
-- `rootPath` 必须是已存在的目录（或未来由显式 provisioning 创建）；必须是规范化绝对路径；不得是磁盘根目录、用户主目录或与另一个 Workspace root 重叠（互为祖先/后代）。
-- `isolationPolicy` 默认 `mutex`；`git-worktree`/`directory-copy` 只有在执行器声明并验证能力时才可用；`shared-readonly` 不属于 Phase 2.1A 的 Workspace 创建选项。
-- Workspace 是逻辑隔离边界，不自动等于 OS 级文件隔离。应用层权限检查和 `cwd` 校验不能阻止同机其他进程直接访问文件；这是 AD-11/AD-13 已说明的能力边界。
+- `rootPath` 必须是已存在的目录（或未来由显式 provisioning 创建）；字符串规范化和实际文件系统身份必须分开处理，详见 IW-09 / 19.1。仅做 `path.win32.normalize`、`realpath` 或字符串前缀比较都不够；root admission 的具体卷类型、reparse、file ID 和重叠规则以 19.1.2 为准。
+- `rootIdentity` 记录 volume serial + file ID + final path；每次安全敏感操作必须重新校验，不能只信 Store 里的旧字符串。
+- `workspaceBoundaryEnforcement=cooperative` 表示 Hub 只约束自己解析的路径，不能约束 DSH 子进程的任意绝对路径；Phase 2.1A 不提供 OS 级隔离。
+- `isolationPolicy` 默认 `mutex`；`git-worktree`/`directory-copy` 只有在执行器声明并验证能力时才可用；`shared-readonly` 不属于 Phase 2.1A 的 Workspace 创建选项。三者都不是 OS 安全边界。
+- Workspace 是逻辑/协作边界，不自动等于 OS 级文件隔离。应用层路径检查和 `cwd` 校验不能阻止同机其他进程或恶意执行器直接访问其他文件；这是 AD-11/AD-13 已说明的能力边界。
 
 ### 5.2 创建、归档、恢复、删除
 
 #### 创建
 
 - `createWorkspace` 只允许 active User；Agent 和 System 不允许。
+- **Local bootstrap 连接没有 `workspace:create`**；不能用本地 stdio 创建或切换 Workspace（IW-10 / 19.2）。
+- Phase 2.1A 的 Workspace 创建只允许离线 provisioning（`bootstrap-v3`/管理 CLI）；未来多 Workspace 管理由独立的管理接口/授权上下文执行，不能复用本地 bootstrap 连接。
 - 创建事务必须同时写入 Workspace、创建者的 owner Membership、`workspace.created` 事件和 `authorizationRevision`。
 - 初始 Owner 是创建者；不能创建“无 Owner Workspace”。
-- `rootRef` 由 Hub 生成；`rootPath` 由创建输入提供但只保存在服务端。
-- 创建者若没有全局 `workspace:create` 能力，拒绝；Phase 2.1A 的本地 bootstrap User 默认具备该能力，远程策略由未来身份层决定。
+- `rootRef` 由 Hub 生成；`rootPath` 由创建输入提供但只保存在服务端；创建前必须完成 IW-09 的 root 校验。
 
 #### 归档
 
@@ -285,7 +296,8 @@ Workspace:
 1. Workspace 为 `active`；
 2. 不存在 `queued`/`running` Execution；
 3. 不存在 `held`、`releasing`、`frozen` 或 `quarantined` WorkspaceWriteLease；
-4. 没有 `governanceState=ownerless_locked`。
+4. `quarantineState=normal`；
+5. 没有 `governanceState=ownerless_locked`。
 
 不满足时返回 `WORKSPACE_BUSY` 或 `WORKSPACE_QUARANTINED`，不得静默取消执行或释放租约。
 
@@ -313,7 +325,7 @@ Workspace:
 
 #### 删除
 
-- `deleteWorkspace` 仅 Owner；要求先 `archived`（或同一幂等命令的明确 `archiveThenDelete`，若未来提供），且无活动执行/租约。
+- `deleteWorkspace` 仅 Owner；要求先 `archived`（或同一幂等命令的明确 `archiveThenDelete`，若未来提供），无活动执行/租约，且 `quarantineState=normal`。
 - 软删除：`status=deleted`、`deletedAt`、`deletedFrom`；不删除 root、Task、Execution、Artifact 或 Event。
 - 删除后的 Workspace 只允许 system recovery 读取；普通 API 返回 `WORKSPACE_NOT_FOUND`，避免存在性泄漏。
 - Phase 2.1A 不提供物理删除。物理保留和磁盘清理是独立运维策略，不属于本设计。
@@ -324,8 +336,9 @@ Workspace:
 WorkspaceMember:
   workspaceId + principalId    复合唯一
   role                         owner | admin | operator | viewer
-  status                       active | revoked
+  status                       active | revoked        // stored state
   version                      integer
+  lastMembershipRevisionId     string                 // 指向 append-only history
   grantedByPrincipalId         string
   grantedAt / updatedAt
   revokedAt / revokedReason
@@ -333,6 +346,7 @@ WorkspaceMember:
 
 约束：
 
+- `status` 是 **stored state**，只有 `active|revoked`；不新增 `suspended` 存储值。`effective state` 由 19.3 的公式计算，不持久化。
 - Owner 唯一；`Workspace.ownerPrincipalId` 与唯一 `role=owner` 的 Membership 必须一致。
 - 正常情况下 Owner 必须是 active User；Admin 也必须是 active User（Phase 2.1A 安全收紧）。
 - 唯一例外是系统强制停用/删除最后一个 Owner 后的 `governanceState=ownerless_locked`：此时 owner Membership 仍保留 role=owner 用于审计，但其 Principal 已非 active；该 Workspace 禁止普通治理写入，只能由 `system:recovery` 恢复。这个例外必须在 Store v3 不变量中显式编码，不能靠宽松校验绕过正常的 active Owner 规则。
@@ -340,6 +354,7 @@ WorkspaceMember:
 - 新成员默认角色是 `viewer`；只有 Owner/Admin 可以授予 `operator`/`admin`。
 - 不能用“Agent 是 Operator”推导出“Agent 可以控制 Workspace 内所有 Task”。
 - 成员角色只是 Workspace 级上限；Task 控制权和 Artifact ACL 仍必须单独满足。
+- 每次 add/role change/leave/remove/re-add 都追加 `MembershipRevision`；当前记录只保存最新状态，历史不能被覆盖（IW-11 / 19.3）。
 
 ### 5.4 邀请、加入、退出、移除、失效
 
@@ -377,28 +392,29 @@ MembershipInvite:
 #### 退出
 
 - 非 Owner 成员可以 `leaveWorkspace`；最后一个 Owner 不能退出，必须先转移 Owner。
-- 退出后 Membership `status=revoked`；立即失效连接、订阅和 Delegation，冻结其 controller Task（AD-08）。
+- 退出后 Membership 的 **stored status=revoked**；effective 立即失效；连接、订阅和 Delegation 立即失效，冻结其 controller Task（AD-08）。
 - 其 Task owner/createdBy/requestedBy 字段保留用于审计，但不再能访问；Owner/Admin 可显式转移。
 
 #### 移除
 
 - Owner/Admin 可以移除非 Owner 成员；Admin 不能移除 Owner 或其他 Admin（只有 Owner 能调整 Admin）。
-- 移除是原子的：Membership revoked、`authorizationRevision+1`、相关 Delegation revoked、controller Task frozen、事件。
+- 移除是原子的：Membership stored `revoked`、追加 `MembershipRevision`、`authorizationRevision+1`、相关 Delegation revoked、controller Task frozen、事件。
 - 该主体作为 **grantee** 的 ArtifactGrant 在同一事务中撤销；其作为 grantor 已授予他人的 ArtifactGrant 不自动撤销，除非该主体同时是 Artifact owner 或 Workspace Owner/Admin，且安全处置要求撤销。撤销/保留必须在事件中可见。
 - 移除不得删除该主体的 Task、Execution 或 Artifact；只撤销访问。
 - 移除后重新添加不会自动恢复旧 Delegation 或旧 ArtifactGrant；必须重新授权。
 
 #### 失效
 
-以下任一情况使 Membership 立即失效：
+Membership 的 **effective state** 可能因下列情况失效；只有 stored `revoked` 才是持久撤销：
 
-- `status=revoked`；
-- Principal disabled/deleted；
-- Workspace archived/deleted；
-- 角色被降到不足以执行当前操作（例如 controller 需要 operator 以上）；
-- Workspace governance locked。
+- `stored status=revoked`：永久失效，重新启用 Principal 也不恢复；重新加入必须新建 `MembershipRevision`。
+- Principal disabled：stored 仍 active，effective suspended；Principal 恢复 active 后，若 stored 仍 active，effective 自动恢复。
+- Principal deleted：删除事务把 stored 置为 revoked；不可恢复。
+- Workspace deleted：effective 失效，仅 system recovery 可读；Workspace archived 时 effective 仍存在，但只能按归档策略读取，写操作拒绝。
+- 角色被降到不足以执行当前操作（例如 controller 需要 operator 以上）：effective role 立即变化，Controller 冻结；Membership 本身仍 active。
+- `governanceState=ownerless_locked`：不是 Membership 失效；它只阻断治理/新工作操作，具体见 IW-11 / 19.3。
 
-失效不是“返回空列表”：已知 Workspace 但无权访问时返回 `AUTHORIZATION_REVOKED` 或 `FORBIDDEN`；不属于成员时按 7.5/12.1 返回 `WORKSPACE_NOT_FOUND`/`TASK_NOT_FOUND`。
+授权判断只使用 effective state；不能只读 `WorkspaceMember.status`。失效不是“返回空列表”：已知 Workspace 但无权访问时返回 `AUTHORIZATION_REVOKED` 或 `FORBIDDEN`；不属于成员时按 7.5/12.1 返回 `WORKSPACE_NOT_FOUND`/`TASK_NOT_FOUND`。
 
 ### 5.5 Owner 转移与最后一个 Owner
 
@@ -496,21 +512,23 @@ resourceScope =
 
 ```text
 Principal(A).status = active
-AND Membership(A, ws).status = active
+AND effectiveMembership(A, ws) = active
+AND workspaceAllows(ws, op)  // archived=只读、quarantine/ownerless 的写限制
 AND Membership(A, ws).role permits op at Workspace level
 AND DelegationGrant(status=active, now < expiresAt)
 AND A = delegatePrincipalId
 AND ws = grant.workspaceId
 AND op ∈ grant.scopes
 AND r ∈ grant.resourceScope（或 op=task:create 且 scope=workspace）
-AND grantorPrincipalId 仍是 active User、active 成员
-AND Membership(grantor, ws) 当前仍允许 op
+AND grantorPrincipalId 仍是 active User、effective 成员
+AND effectiveMembership(grantor, ws) 当前仍允许 op
 AND grantor 当前对 r 有对应资源权限（Task owner/controller/Artifact owner/ACL）
 AND r 对 A 本身也可读/可写（Workspace 可见性、Task 可见性、Artifact ACL）
 ```
 
 关键理解：
 
+- `workspaceAllows` 不是 Membership 状态：`archived` 只允许按归档策略读取，`quarantined` 禁止新写/执行，`ownerless_locked` 禁止治理/新工作；不能因为 effective Membership 仍 active 就放行写操作。
 - 这是**交集**，不是并集。Agent 自己的 Operator 角色不能让它超过 grantor；grantor 的用户权限也不能替代 Agent 的成员资格。
 - `requestedByPrincipalId` 由 `grant.grantorPrincipalId` 推导；不能由 Agent payload 提供。
 - `delegationId` 由连接绑定或服务端选择的 grant 推导；客户端提供同名字段只能作为 selector，Store 必须重新验证它属于 actor，不能作为授权证明。
@@ -683,13 +701,14 @@ Store 必须在同一个 commit 内完成：
 1. `expectedRevision` 与当前数据 revision 一致；
 2. `expectedAuthorizationRevision` 与当前授权 revision 一致；
 3. actor Principal 存在且 active；
-4. Membership 存在、active、角色允许 Workspace 级操作；
-5. Delegation 存在、active、未过期、scope/resourceScope 匹配、delegate=actor；
-6. grantor 仍是 active User/成员且当前仍有被委托的权限；
-7. Task/Artifact/Execution 的资源级权限满足（owner/controller/visibility/ACL/lease 状态）；
-8. 目标状态迁移合法；
-9. 幂等记录（如有）属于同一 AD-10 scope，且当前仍被授权；
-10. 生成 changes 与 events 后才持久化。
+4. Membership 存在且 **effective=active**，角色允许 Workspace 级操作；不能只检查 stored `status`；
+5. Workspace status/quarantine/governance 允许该 operation（archived 只读、quarantined 禁止写/执行、ownerless 禁止治理/新工作）；
+6. Delegation 存在、active、未过期、scope/resourceScope 匹配、delegate=actor；
+7. grantor 仍是 active User/effective 成员且当前仍有被委托的权限；
+8. Task/Artifact/Execution 的资源级权限满足（owner/controller/visibility/ACL/lease 状态）；
+9. 目标状态迁移合法；
+10. 幂等记录（如有）属于同一 AD-10 scope，且当前仍被授权；
+11. 生成 changes 与 events 后才持久化。
 
 任何失败都必须在写入前返回：
 
@@ -719,7 +738,7 @@ artifact 读取（Phase 2.1B）
 
 规则：
 
-- `listWorkspaces` 只返回 actor 有 active Membership 的 Workspace；不返回全局 Workspace 列表。
+- `listWorkspaces` 只返回 actor 有 **effective active** Membership 的 Workspace；默认只含 `status=active`，`includeArchived=true` 时才含 archived，deleted 不返回。不返回全局 Workspace 列表。
 - `listTasks` 必须带 `workspaceId`；先验证 Membership，再按 Task 可见性过滤。
 - `getTask(taskId)` 先解析 Task 的 `workspaceId`；actor 不是该 Workspace active 成员时返回 `TASK_NOT_FOUND`（避免跨租户存在性泄漏）；是成员但无 Task 可见性时返回 `TASK_NOT_VISIBLE`。
 - `getExecution`/`listExecutions` 先按 Task 可见性过滤；不能通过 executionId 绕过 Task。
@@ -800,7 +819,7 @@ artifact 读取（Phase 2.1B）
 
 记号：
 
-- **Y**：满足主体 active、Membership active、资源可见等前置条件时允许；
+- **Y**：满足主体 active、Membership effective active、资源可见等前置条件时允许；
 - **C**：有条件允许，见脚注；
 - **—**：拒绝；
 - 所有行都隐含“actor 必须是 active Principal”；不重复写。
@@ -820,11 +839,11 @@ artifact 读取（Phase 2.1B）
 | `workspace:manage_members` | Y | Y² | — | — | — | — | — |
 | `workspace:manage_policy` | Y | Y | — | — | — | — | — |
 | `workspace:recover_owner` | — | — | — | — | — | — | Y（离线） |
-| `workspace:create` | User 可创建³ | User 可创建³ | — | — | — | — | — |
+| `workspace:create` | — | — | — | — | — | — | — |
 
 1. Delegated Agent 仍必须是 Workspace active 成员；Delegation 不授予 Membership。Workspace 读取以 Membership 为准。
 2. Admin 不能移除/降级 Owner，不能创建第二个 Owner；不能移除其他 Admin（只有 Owner 可以调整 Admin）。
-3. `workspace:create` 是 active User 的全局能力，不是 Workspace 角色；Agent 不得创建 Workspace。远程部署可进一步限制。
+3. `workspace:create` **不是 Workspace 角色权限，也不是 Local Bootstrap 的权限**。Phase 2.1A 只允许离线 provisioning；未来由独立的管理接口/上下文（User、显式管理能力、非 delegation）执行。Agent 不得创建 Workspace。
 
 ### 9.2 Task 级
 
@@ -935,6 +954,7 @@ artifact 读取（Phase 2.1B）
 - `bootstrapPrincipalId`、`bootstrapWorkspaceId` 必须指向 Store 中已存在的 active User 和 active Workspace。
 - `bootstrapDelegationId` 在本地 User 模式下必须为 null；未来如果需要本地 Agent，必须由 Owner 明确创建 grant，并单独评审。
 - `workspaceScope="single"` 表示该连接只能访问这个 Workspace；即使 bootstrap Principal 同时属于其他 Workspace，也不能通过本地 stdio 访问。
+- Local bootstrap **没有 `workspace:create`**，也没有 Workspace 切换能力；`createWorkspace`/`selectWorkspace` 不在本地 stdio 的允许方法表中。不要在配置中增加 `allowWorkspaceCreate`；不要用配置开关恢复全局创建能力。
 - `allowAnonymous` 必须缺失或 false；出现 true 时启动失败并记录安全错误。不得用“缺省=true”或“无身份=全权限”。
 - 不在配置中放 API key、密码、DSH 凭据或用户隐私；`config/windows.json` 不进入 Git。
 
@@ -959,7 +979,7 @@ artifact 读取（Phase 2.1B）
    - 写 `workspace.bootstrap`/`principal.created` 系统审计事件；
    - 原子发布 v3 Store。
 4. 更新 `config/windows.json` 的 `identity` 块，指向已创建的 ID。
-5. 正常启动只绑定已有身份，不自动创建。
+5. 正常启动只绑定已有身份，不自动创建；新增 Workspace 仍必须重复同一离线 provisioning（或未来独立管理接口），不能从本地 stdio 创建。
 
 ### 10.4 启动校验与失败行为
 
@@ -993,7 +1013,7 @@ Hub 启动在打开 Store 后、接受命令前必须校验：
 - 本地 stdio 不是远程认证，也不能证明“调用者是某个真实的人”。
 - 任何能启动 Hub、写其 stdin 或读取 `config/windows.json` 的本机进程，在 OS 权限范围内都可以代表 bootstrap Principal。Hub 不能在本机进程之间做用户隔离。
 - 不提供多客户端 stdio；如果未来需要多用户/多 Agent，必须新增认证入口和连接隔离。
-- 本地模式只允许访问一个受限 Workspace；不能通过 `listWorkspaces` 枚举其他 Workspace。
+- 本地模式只允许访问一个受限 Workspace；不能通过 `listWorkspaces` 枚举其他 Workspace，也不能创建、切换或删除 Workspace。
 - Hub 不应把 `rootPath`、bootstrap 配置、环境变量或 DSH 命令参数写入日志/事件。
 - 配置文件的权限由 OS 管理；仓库只提交 `config/windows.example.json` 的占位值，不提交真实路径、账户或密钥。
 
@@ -1026,7 +1046,7 @@ stateDiagram-v2
 ```
 
 - 停用是可逆的；删除不可逆。
-- 停用后重新启用不会自动恢复 Delegation；Membership 可以恢复但需要重新评估 Controller。
+- 停用后重新启用不会自动恢复 Delegation；只有 stored 仍为 active 的 Membership 会恢复 effective 状态，显式 revoked 的不会恢复；Controller 需要重新评估。
 - 删除后不能重新启用；需要新的 Principal ID。
 
 ### 11.2 Workspace 生命周期
@@ -1049,16 +1069,19 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
-    [*] --> active: add/accept invite
-    active --> active: role change
-    active --> revoked: leave/remove
-    active --> revoked: principal disabled/deleted (effective)
-    revoked --> active: re-add (new version)
+    [*] --> active: add/accept invite (stored)
+    active --> active: role change (stored)
+    active --> revoked: leave/remove/delete principal (stored)
+    active --> suspended: principal disabled (effective only)
+    suspended --> active: principal re-enabled + stored active (effective only)
+    revoked --> active: re-add (new MembershipRevision; old history retained)
 ```
 
-- 重新添加创建新的 Membership 版本；旧 Delegation/ArtifactGrant 不自动恢复。
+- `stored` 状态只有 `active|revoked`；`suspended` 是 effective 投影，不能写回 stored 字段。
+- 重新添加创建新的 `MembershipRevision`；旧 Delegation/ArtifactGrant 不自动恢复。
 - Owner Membership 不能直接 revoked；必须先转移 Owner。
 - 角色降级会立即影响 Controller 资格；不满足 operator 的 Controller 冻结。
+- 授权、连接和缓存只使用 effective state；`membershipVersion` 只覆盖 stored 变更，Principal enable/disable 由 `principalVersion` 和 `authorizationRevision` 覆盖（IW-11 / 19.3）。
 
 ### 11.4 Delegation 生命周期
 
@@ -1082,7 +1105,7 @@ stateDiagram-v2
 | `principal.created/disabled/deleted` | system | admin | 全局主体，不含私有内容 |
 | `workspace.created` | system + workspace | admin/tenant | 两条事件用 correlationId 关联（AD-09） |
 | `workspace.archived/restored/deleted` | workspace | tenant | 不含 rootPath |
-| `membership.added/role_changed/removed` | workspace | tenant/admin | 记录 principalId/role，不含个人资料 |
+| `membership.added/role_changed/removed/re_added` | workspace | tenant/admin | 记录 principalId/role/revisionId，不含个人资料 |
 | `workspace.owner_transferred` | workspace | tenant/admin | before/after、reason |
 | `delegation.created/revoked/expired` | workspace | tenant/admin | 记录 scope/resource 摘要，不含 token |
 | `controller.frozen/unfrozen/transferred` | workspace | tenant/admin | 记录 taskId、旧/新 controller |
@@ -1116,6 +1139,9 @@ stateDiagram-v2
 | 15 | 最后一个 Owner 退出/移除/降级 | 拒绝 | Membership 事务 | `LAST_OWNER` | 拒绝审计 |
 | 16 | Workspace 仍有 running Execution 时归档 | 拒绝，不静默取消 | Workspace 事务 | `WORKSPACE_BUSY` | 拒绝审计 |
 | 17 | 没有 AD-13 证据时强制释放 Lease | 拒绝或 quarantine | Lease 事务 | `UNSAFE_RELEASE` | `lease.quarantine` |
+| 18 | Workspace 子目录在检查后被替换为 Junction | 若不能 handle-relative/no-follow 验证，拒绝并 quarantine；不跟随到 root 外 | Path guard | `WORKSPACE_PATH_REPARSE`/`WORKSPACE_PATH_RACE` | `workspace.quarantined` |
+| 19 | Local Bootstrap 调用 `createWorkspace` | 方法不在 allowlist；不创建 Workspace | Local connection | `WORKSPACE_CREATE_NOT_ALLOWED` | 安全审计 |
+| 20 | Principal 从 disabled 恢复 active，但 Membership 曾显式 revoked | stored 仍 revoked；不恢复访问 | Membership effective check | `AUTHORIZATION_REVOKED` | `membership.revoked` 历史保留 |
 
 ### 12.2 关键场景说明
 
@@ -1133,7 +1159,7 @@ Hub 不读取这两个字段作为身份。连接已经绑定 actor Agent；如�
 
 1. 按 taskId 找到 Task（或找不到）；
 2. 用 Task.workspaceId 找 actor 的 Membership；
-3. 若没有 active Membership，返回 `TASK_NOT_FOUND`；
+3. 若没有 effective active Membership，返回 `TASK_NOT_FOUND`；
 4. 若有 Membership，按 private/workspace 可见性矩阵判断；
 5. 若不可见，返回 `TASK_NOT_VISIBLE`；
 6. 不返回 Task 的任何字段，包括 `workspaceId`、`owner`、`status`。
@@ -1199,6 +1225,7 @@ Alice 的 delegation A 和 Bob 的 delegation B 即使 key 相同，也是不同
 - 当前 `ExecutionStore` 只有 `commit(expectedRevision, changes)`，没有授权参数；
 - 当前 `DshAcpExecutor.getTask/listTasks/...` 没有 actor/workspace 过滤；
 - 当前 `acknowledgeIntegrityAlerts` 仍接受 `acknowledgedBy` 字符串；
+- 当前 `packages/windows-paths/index.mjs` 只有 `path.win32.normalize`，没有 file ID/reparse/handle-relative 检查；
 - 当前 `config/windows.json` 没有 `identity` 块；
 - 当前 Hub `ready.protocolVersion` 是 2，不是 3。
 
@@ -1218,7 +1245,11 @@ PrincipalStatus    = active | disabled
 PrincipalViewStatus= active | disabled | deleted
 WorkspaceStatus    = active | archived | deleted
 MemberRole         = owner | admin | operator | viewer
-MemberStatus       = active | revoked
+MemberStatus       = active | revoked            // stored only
+MemberEffectiveStatus = active | suspended | revoked
+MembershipRevision  = append-only audit record
+WorkspaceBoundaryEnforcement = cooperative | os-enforced
+WorkspaceRootIdentity = { volumeSerial, fileId, finalPath, observedAt }
 DelegationStatus   = active | revoked | expired
 DelegationScope    = task:read | task:create | task:control |
                      execution:read | execution:create | execution:control |
@@ -1233,6 +1264,8 @@ ResourceScope      = workspace | tasks | artifacts
 - `requestKey` 的 scope 必须按 AD-10；`RequestRecord` 保存 workspace/actor/delegation/operation/key 以及 `authorizationRevision`。
 - 错误码必须是可区分的稳定枚举；不能把所有拒绝都返回 `ERROR`。
 - `PrincipalView` 可以返回 `deleted` 投影，但实体 `status` 仍只有 active/disabled。
+- `WorkspaceMember` 公开视图必须同时提供 `storedStatus` 和 `effectiveStatus`，不能只返回 stored 字段。
+- Workspace root 的 `rootPath`/`rootIdentity` 不进入公开 API；只返回 `rootRef` 和 `workspaceBoundaryEnforcement`。
 
 ### 14.2 Store v3
 
@@ -1242,6 +1275,7 @@ ResourceScope      = workspace | tasks | artifacts
 principals
 workspaces
 workspaceMembers
+membershipRevisions      // append-only Membership 审计历史
 membershipInvites
 delegations
 tasks
@@ -1261,17 +1295,19 @@ Store 不变量：
 
 1. Principal ID 全局唯一；`system:*` 前缀保留。
 2. Workspace ID 全局唯一；每个资源只能属于一个 Workspace。
-3. `(workspaceId, principalId)` Membership 唯一。
-4. 每个 Workspace 恰好一个 `role=owner` 的 Membership，且与 `Workspace.ownerPrincipalId` 一致；正常情况下该 Membership 必须 active、其 Principal 必须是 active User。唯一例外是 `governanceState=ownerless_locked` 的系统强制停用/删除路径，此时 owner Membership 仅保留审计角色，不能执行任何 owner 权限，且只有 `system:recovery` 能恢复。
-5. 不允许 Agent Owner/Admin。
-6. Delegation grantor User、delegate Agent；delegate 必须是 active 成员；不能跨 Workspace。
-7. 不允许二次委托：`parentDelegationId` 在 Phase 2.1A 必须为 null。
-8. Task 的 workspace/owner/requestedBy/controller 引用必须属于同一 Workspace；赋值/转移时 owner/controller 必须是 active 成员。主体事后 disabled/deleted 时允许保留历史引用，但必须同时满足“无有效权限 + controller frozen”的例外；legacy 迁移例外需显式标记。
-9. Controller 必须是 operator 或更高；冻结状态与 `controllerFrozenReason` 一致。
-10. `authorizationRevision` 单调递增；所有影响授权的变更都递增。
-11. 身份/成员/委托写入与业务写入在同一 commit 中完成；失败不留下部分记录。
-12. 事件 scope/audience 符合 AD-09；system 事件不能带 workspace 私有内容。
-13. 物理删除默认不发生；软删除保留审计引用。
+3. `(workspaceId, principalId)` Membership 当前记录唯一；`MembershipRevision` 按 `membershipRevisionId` 追加，永不覆盖旧 revision。
+4. Membership 的授权结果必须由 effective 公式计算，不能只读 stored `status`；显式 `revoked` 不得因 Principal 恢复 active 而复活。
+5. 每个 Workspace 恰好一个 `role=owner` 的 Membership，且与 `Workspace.ownerPrincipalId` 一致；正常情况下该 Membership 必须 active、其 Principal 必须是 active User。唯一例外是 `governanceState=ownerless_locked` 的系统强制停用/删除路径，此时 owner Membership 仅保留审计角色，不能执行任何 owner 权限，且只有 `system:recovery` 能恢复。
+6. 不允许 Agent Owner/Admin。
+7. Delegation grantor User、delegate Agent；delegate 必须是 effective active 成员；不能跨 Workspace。
+8. 不允许二次委托：`parentDelegationId` 在 Phase 2.1A 必须为 null。
+9. Task 的 workspace/owner/requestedBy/controller 引用必须属于同一 Workspace；赋值/转移时 owner/controller 必须是 active 成员。主体事后 disabled/deleted 时允许保留历史引用，但必须同时满足“无有效权限 + controller frozen”的例外；legacy 迁移例外需显式标记。
+10. Controller 必须是 operator 或更高；冻结状态与 `controllerFrozenReason` 一致。
+11. `authorizationRevision` 单调递增；所有影响授权的变更都递增；Membership stored 变更同时递增 `membershipVersion` 并追加 history。
+12. 身份/成员/委托写入与业务写入在同一 commit 中完成；失败不留下部分记录。
+13. 事件 scope/audience 符合 AD-09；system 事件不能带 workspace 私有内容。
+14. 物理删除默认不发生；软删除保留审计引用。
+15. Workspace root 必须有 `rootIdentity`；Path guard 只允许在 `workspaceBoundaryEnforcement=cooperative` 下声明为协作边界，不能把 Node `realpath`/字符串前缀当作 OS 隔离；identity/reparse 异常必须进入 `quarantineState=quarantined`。
 
 Store 接口约束：
 
@@ -1286,17 +1322,22 @@ Store 接口约束：
 至少约束：
 
 - `protocolVersion=3`；v2 客户端不能静默获得 v3 权限语义。
-- `ready`/`initialize` 返回 actor 的 `principalId`、`principalType`、可用 Workspace 摘要；不返回 rootPath。
+- `ready`/`initialize` 返回 actor 的 `principalId`、`principalType`、可用 Workspace 摘要；Workspace 视图返回 `workspaceBoundaryEnforcement`、`quarantineState`，不返回 rootPath/rootIdentity。
 - 所有 workspace-scoped 方法必须显式 `workspaceId` 或从资源解析；不能依赖“默认 Workspace”。
-- `listWorkspaces` 只返回 actor 的 active Membership；`includeArchived` 需要权限。
+- `listWorkspaces` 只返回 actor 的 effective active Membership；默认 `status=active`，`includeArchived=true` 才含 archived，deleted 不返回。
 - `selectDelegation(delegationId)` 是独立控制方法，只能重绑当前连接，必须验证 delegate=actor、workspace 匹配、grant active；不能返回其他 Agent 的 grant。普通业务方法不接受 `delegationId` 参数。
 - 所有读方法统一过滤；`getEvents` 必须有 scope/workspace；旧全局 `afterSequence` 只能作为 legacy 兼容层，且仍要授权。
 - 所有写方法不使用客户端身份字段；`acknowledgedBy` 从 context 生成。
+- Local bootstrap 的允许方法表明确排除 `createWorkspace`/`selectWorkspace`；调用返回 `WORKSPACE_CREATE_NOT_ALLOWED`，不得回退到普通 `FORBIDDEN` 后仍创建。
 - 错误：
   - `AUTHORIZATION_STALE`：版本变化，未写入；
   - `AUTHORIZATION_REVOKED`：撤权/过期/成员失效；
   - `FORBIDDEN`：有身份但无该操作权限；
   - `LAST_OWNER`、`OWNER_MUST_BE_USER`、`WORKSPACE_ARCHIVED`、`WORKSPACE_BUSY`；
+  - `WORKSPACE_CREATE_NOT_ALLOWED`：Local Bootstrap 或非管理上下文尝试创建 Workspace；
+  - `WORKSPACE_SCOPE_VIOLATION`：Local Bootstrap 访问非绑定 Workspace；
+  - `MANAGEMENT_CONTEXT_REQUIRED`：未来多 Workspace 操作缺少独立管理上下文；
+  - `WORKSPACE_PATH_INVALID`、`WORKSPACE_PATH_ESCAPE`、`WORKSPACE_PATH_REPARSE`、`WORKSPACE_ROOT_UNSUPPORTED_VOLUME`、`WORKSPACE_ROOT_IDENTITY_CHANGED`、`WORKSPACE_PATH_RACE`、`WORKSPACE_BOUNDARY_UNENFORCED`；
   - `DELEGATION_NOT_ALLOWED`、`DELEGATION_SCOPE`、`DELEGATION_RESOURCE`；
   - `UNEXPECTED_IDENTITY_FIELD`；
   - `BOOTSTRAP_*` 启动错误；
@@ -1365,6 +1406,7 @@ visibility=private
 6. `authorizationRevision` 是全局单调值；为简化原子性，宁可保守地使无关写入 `AUTHORIZATION_STALE`，也不放宽检查。
 7. 过期时间使用 Hub 服务端时钟；客户端时钟不参与授权。
 8. 当前 v2 Store 的容量上限是 Phase 2.1A 批量撤权事务的现实边界；提高上限必须重新评审。
+9. Phase 2.1A 的 Workspace root 是 cooperative boundary，不是 OS 安全边界；DSH 子进程仍以当前 OS 用户运行，可访问 root 之外的文件。
 
 ### 16.2 P1 未决问题
 
@@ -1372,6 +1414,7 @@ visibility=private
 2. **过期物化延迟**：授权检查按时间立即拒绝，但 `controlState=frozen`/`delegation.expired` 的持久化由 reconciler 完成；需要验证启动扫描、最早过期调度和读取投影的一致性，避免 UI 显示 active 但命令全被拒。
 3. **Ownerless 恢复**：系统强制停用最后一个 Owner 后，只允许 `system:recovery` 恢复；恢复工具的操作权限、审计和离线审批流程尚未定义。
 4. **本地 bootstrap 信任边界**：本地 stdio 无法区分同一 OS 用户下的不同进程；只能作为单一本机信任边界，不能作为多用户认证。实现/部署文档必须显式声明，不能把本机进程隔离宣称为已实现。
+5. **Windows 路径边界尚无 OS 强制能力**：当前 `packages/windows-paths` 只有字符串 normalize，Node 核心也不提供 handle-relative/no-follow 的完整 Windows 封装；要实现真正 containment，需要 native path guard 或 OS sandbox/ACL。Phase 2.1A 只能声明 cooperative + fail-closed，不能宣称已隔离。
 
 ### 16.3 P2 问题
 
@@ -1384,6 +1427,8 @@ visibility=private
 - `WorkspaceMember`/`Membership`、`PrincipalView.status=deleted` 等命名需要在 Contracts 中统一。
 - `MembershipInvite` 是否进入 v3 首个实现，还是仅保留设计，需要按交付范围决定。
 - 本地 bootstrap 是否允许 Agent 连接（当前不允许）需要未来产品决策。
+- `MembershipRevision` 的字段、保留期和压缩策略需要在 Store v3 设计；本轮只冻结 append-only 语义。
+- Windows reparse point 的 Node 检测/原生 helper 的具体实现方式尚未选定；不能用 `lstat` 结果冒充完整 reparse 检测。
 - 事件 `workspace.created` 的 system/workspace 双事件需要确认 correlationId 规范。
 - 未来二次委托、跨 Workspace 共享、MFA、审批流均未设计。
 
@@ -1404,7 +1449,10 @@ visibility=private
 7. 权限矩阵覆盖 Owner/Admin/Operator/Viewer/Agent/Delegated Agent/System，并拆到读/创建/修改/控制/授权/管理。
 8. 与 AD-01 至 AD-14 逐项一致；与 Phase 1.1 可靠性不变量无未解释冲突。
 9. 明确列出未实现能力、P0/P1/P2 未决项和假设。
-10. 不修改任何业务代码、Contracts、Store、Executor、ACP Transport、配置、测试或 Git 历史。
+10. IW-09：区分 lexical path 与文件系统 identity；说明 reparse point、UNC/case、TOCTOU 和 cooperative 边界；不得把 `realpath`+prefix 当作隔离。
+11. IW-10：Local Bootstrap 明确没有 `workspace:create`；Workspace 创建只走离线 provisioning 或未来独立管理上下文。
+12. IW-11：Membership stored/effective 分离；显式 revoked 不因 Principal 恢复 active 而复活；审计 history 不覆盖。
+13. 不修改任何业务代码、Contracts、Store、Executor、ACP Transport、配置、测试或 Git 历史。
 
 ### 17.2 实现前门槛（不在本轮完成）
 
@@ -1414,6 +1462,9 @@ visibility=private
 - Store v3 的 `commitAuthorized` 语义通过独立评审；
 - 批量撤权、过期物化、Ownerless 恢复有可验证方案；
 - Bootstrap 初始化/恢复工具的安全边界通过评审；
+- IW-09 的 root admission/per-operation guard/TOCTOU 方案选定，且明确 cooperative 或 OS-enforced 能力；
+- IW-10 的 Local Bootstrap 方法表/管理上下文接口冻结；
+- IW-11 的 effective Membership 公式和 `MembershipRevision` 契约冻结；
 - 认证适配器（本地/未来远程）明确，且不会把 payload 当身份；
 - Phase 2.1B 仍不开始。
 
@@ -1432,3 +1483,320 @@ Phase 2.1A 的核心不是增加几张表，而是把“谁在什么授权边界
 - 已知的竞态和边界（外部 dispatch、过期物化、批量撤权、本机信任）被明确记录，不声称 exactly-once。
 
 本文件作为 Phase 2.1A 的设计基线，等待独立一致性审查；不开始实现，不进入 Phase 2.1B。
+
+---
+
+## 19. Phase 2.1A.1 补充决策（IW-09 至 IW-11）
+
+状态：**docs-only clarification / design baseline amendment**。本节补充优先于前文的模糊表述；不改变 AD-01 至 AD-14，不实现任何能力。
+
+### 19.1 IW-09：Windows Workspace Root 路径边界
+
+#### 19.1.1 决策
+
+**字符串路径规范化不等于文件系统路径身份；Phase 2.1A 的 Workspace root 只是 cooperative boundary，不是 OS 安全边界。**
+
+分为三层：
+
+1. **Lexical layer**：用 `path.win32` 解析、规范化、拒绝非法段；
+2. **Filesystem identity layer**：用 root 的 volume serial + file ID + final path 判断“是不是同一个目录”；
+3. **Process enforcement layer**：执行器实际打开/写入文件时，是否能被 OS 强制限制在 root 内。
+
+当前实现只有第一层：`packages/windows-paths/index.mjs` 只做 `path.win32.normalize`，没有 `realpath`、file ID、reparse point 检测或 handle-relative 操作；`packages/dsh-acp-v2/index.mjs` 把 `Task.cwd` 传给 `session/new`，DSH 子进程仍以当前 OS 用户运行，能使用任意绝对路径。故：
+
+```text
+Phase 2.1A WorkspaceBoundaryEnforcement = cooperative
+不是 os-enforced
+不是 container/AppContainer/ACL sandbox
+```
+
+如果未来要把它变成安全边界，必须另有 OS 级隔离（专用低权限账户 + NTFS ACL、AppContainer、容器/VM，或 native handle-relative path guard），并单独验收；当前不得声称已实现。
+
+#### 19.1.2 Root 初始化校验
+
+Workspace root 在 provisioning/创建时必须通过以下校验，任一失败返回 `WORKSPACE_ROOT_*`，不创建 Workspace：
+
+1. **卷类型**：Phase 2.1A 只接受本地固定 NTFS 卷。拒绝 UNC/网络共享、映射网络驱动器、可移动卷、光驱、设备命名空间和未知卷类型。错误：`WORKSPACE_ROOT_UNSUPPORTED_VOLUME`。
+2. **路径语法**：必须是绝对路径；拒绝 drive-relative（`X:foo`）、root-relative（`\foo`）、`\\?\`/`\\.\` 设备前缀、ADS（`file:stream`）、NUL/控制字符、空段；拒绝 `.`/`..` 段；拒绝结尾点/空格；拒绝 Windows 保留设备名（`CON`、`PRN`、`AUX`、`NUL`、`COM1..9`、`LPT1..9` 等，含带扩展名形式）。
+3. **存在性**：root 必须是已存在的目录；Phase 2.1A 不在创建流程中自动 `mkdir -p` 一个多层 root。
+4. **Reparse point**：从卷根到 root 的每个组件都必须是非 reparse；root 本身也不能是 symlink、junction、mount point 或其他 reparse point。用 Win32 `FILE_ATTRIBUTE_REPARSE_POINT` 检测，不能只用 `fs.lstat().isSymbolicLink()` 推断所有 reparse 类型。错误：`WORKSPACE_PATH_REPARSE`。
+5. **身份记录**：打开 root 目录句柄，记录 `volumeSerial`、`fileId`、`finalPath`、`observedAt` 到 `Workspace.rootIdentity`。`finalPath` 与提交的 `rootPath` 不一致时，以句柄结果为准；`finalPath` 可以是 `\\?\<drive>:\...` 的卷路径，但 `\\?\UNC\...`、`\\.\...` 或无法稳定取得的路径必须拒绝。file ID 可能在对象删除后被复用，因此每次校验必须同时确认目录句柄仍存活、final path 与父链一致；不能只比较历史 file ID。
+6. **禁止位置**：拒绝卷根、用户 profile 根、Windows 目录、Program Files 等系统目录；这些判断使用 OS known folder/volume 信息，不硬编码用户名或本机路径。
+7. **重叠检测**：用 file ID 的祖先链判断 root 之间是否互为祖先/后代，不能只用大小写折叠后的字符串前缀。两个不同字符串指向同一 file ID 时也拒绝。
+8. **容量/权限**：确认当前服务账户可在 root 内创建临时测试目录并删除；测试失败则拒绝或标记 `WORKSPACE_ROOT_UNWRITABLE`。
+
+`rootPath` 和 `rootIdentity` 只存在于服务端 Store；API、事件、错误和日志只返回 `rootRef` 或错误码，不返回绝对路径。
+
+#### 19.1.3 路径语义
+
+| 输入/情形 | 处理 |
+|---|---|
+| `<drive>:\<root>` 与 `<DRIVE>:\<root>` | Windows 通常大小写不敏感；不能只靠 `toLowerCase` 比较，必须用 file ID/final path 确认 |
+| 盘符相同/不同 | 盘符不是文件身份；同一卷可换盘符，同一字符串在不同时间可能指向不同卷；必须用 volume serial + file ID 确认 |
+| 同一卷的不同挂载点/驱动器别名 | 可能指向同一 file ID；初始化时按 identity 去重，不能按字符串认为不同 |
+| UNC `<server>\<share>` | Phase 2.1A 拒绝作为 Workspace root；不得静默映射为本地路径 |
+| `\\?\` / `\\.\` | 客户端输入拒绝；服务端内部 final path 只允许 `\\?\<drive>:\...` 卷路径，拒绝 `\\?\UNC\...`/`\\.\...`，且不回显给客户端 |
+| `.` / `..` | 用户提供的 root 或相对路径拒绝；不靠 `normalize` 把它“吃掉”后继续 |
+| 结尾点/空格 | 拒绝；Win32 可能剥离并产生别名 |
+| 保留设备名/ADS | 拒绝；防止 `NUL`、`file:stream` 等绕过 |
+| Symbolic Link / Junction / Mount Point / 其他 reparse | 一律拒绝作为路径组件；不能跟随到 root 外 |
+| 相对 `workingDirectory` | 允许；必须是规范化相对路径，不能为空以外的 `.`/`..`，不能以盘符/UNC 开头 |
+| 绝对路径作为 Artifact/相对文件参数 | 拒绝；Hub 不接受任意宿主绝对路径 |
+| 大小写冲突创建 | 在大小写不敏感目录中，`Foo` 与 `foo` 视为冲突；用目录句柄枚举/identity 检查 |
+| 目录启用 case-sensitive | 不能假设所有 NTFS 都忽略大小写；仍以 file ID/final path 为准，并按实际目录语义检测冲突 |
+
+#### 19.1.4 每次文件操作
+
+所有 Hub 自己执行的安全敏感文件操作必须遵守：
+
+1. **路径类型**：参数只接受相对 root 的路径；拒绝绝对路径、UNC、设备路径、盘符、`.`/`..`、保留名、ADS、结尾点/空格。
+2. **root identity 复验**：打开/查询 root 句柄，比较 `volumeSerial + fileId`；不一致立即 `WORKSPACE_ROOT_IDENTITY_CHANGED` 并把 Workspace 置 quarantine。
+3. **逐组件 no-follow**：从 root 句柄开始，每个目录组件都以 `FILE_FLAG_OPEN_REPARSE_POINT`/等价 no-follow 方式打开，检查 reparse 属性；发现 symlink/junction/mount point/其他 reparse 立即 `WORKSPACE_PATH_REPARSE`。
+4. **最终对象**：读取/写入/删除/重命名最终对象时，使用同一句柄链和 no-follow 打开；用句柄的 final path/file ID 校验父链，不用字符串 `startsWith`。
+5. **创建目录**：父目录必须是已验证的非 reparse 目录；一次只创建一个组件，使用 `CREATE_NEW` 语义；失败不递归创建。禁止 `mkdir -p` 穿过未验证的父级。
+6. **删除/重命名**：使用句柄操作；禁止对未验证目录做递归删除；遍历中遇到 reparse 立即中止并 quarantine；不能使用 `rm -rf` 风格按路径递归。
+7. **Artifact import/export**：
+   - 不接受客户端提供的任意宿主路径作为源/目标；
+   - 导入先进入独立的 staging 目录（在 Workspace root 外，受限 ACL、随机名），再通过句柄/流复制到 Workspace 内的目标；
+   - 导出通过流或受控 export 目录，不沿客户端路径写任意位置；
+   - staging 和 workspace 目标都必须做 root identity + reparse 检查；
+   - 失败时清理 staging，不保留半导入文件。
+8. **`workingDirectory`/cwd**：解析为 root 下的相对路径；把 `rootIdentity` 和最终 cwd 记录到 Execution 的 `workspaceSnapshot`；传给 `session/new` 前做同样检查。
+9. **失败关闭**：无法取得 file ID、无法打开 no-follow 句柄、reparse 检测不可用、卷类型不支持、identity 变化时，返回 `WORKSPACE_PATH_*` / `WORKSPACE_BOUNDARY_UNENFORCED`，不执行操作；不能降级为字符串比较。
+
+#### 19.1.5 TOCTOU：检查与使用之间的替换
+
+以下窗口是当前架构的真实风险：
+
+```text
+realpath / stat(root)
+  -> 路径检查通过
+  -> 攻击者把 root 内某目录替换为 junction，或把 root 改名/替换
+  -> Hub 用字符串路径 open/write
+  -> 实际写到 root 外
+```
+
+`realpath()` 后再做字符串前缀比较**不是完整方案**：它只证明“检查那一刻”的解析结果，不能证明紧接着的 `open` 仍指向同一对象；子目录替换、大小写别名、短名、挂载点、句柄重定向都可能绕过。
+
+缓解层级：
+
+| 方案 | 是否能消除检查/使用竞态 | 当前是否可用 |
+|---|---|---|
+| `realpath` + `startsWith` | 否 | 只能做诊断 |
+| 每次操作重新 `realpath`/stat | 只能缩短窗口，不能消除 | 不足 |
+| 句柄相对 + no-follow + 逐组件 reparse 检查 | 可以消除路径替换（同一句柄链） | 需要 native helper；当前未实现 |
+| OS sandbox/ACL（专用账户、AppContainer、容器/VM） | 可强制拒绝 root 外访问，即使路径被替换 | 当前未实现 |
+| 失败关闭/quarantine | 不消除竞态，但阻止继续写 | 当前唯一可交付的保守行为 |
+
+Phase 2.1A 的选择：
+
+- **Hub 自己**的文件操作采用“逐组件检查 + identity 复验 + 失败关闭”；在 native handle-relative 能力未实现前，明确标记为 **cooperative**，不宣称对恶意路径替换免疫。
+- **DSH 执行器**不做路径限制承诺：它可以使用绝对路径、`..`、其他盘符；Hub 只能控制 `cwd`，不能控制其工具调用。
+- 发现 root/file ID 变化、reparse、句柄 final path 不在 root 内、或无法验证时：把 `Workspace.quarantineState=quarantined`；禁止新的可写 Execution 和新的文件写入；允许 Owner/Admin 只读审计；必须人工/离线恢复。不能只释放 Lease 后继续写。
+
+#### 19.1.6 初始化、每次操作、执行进程三层约束
+
+| 层 | 负责什么 | 不负责什么 |
+|---|---|---|
+| Root 初始化 | 卷类型、路径语法、reparse、file ID、重叠、权限 | 不能保证以后不被替换 |
+| 每次 Hub 文件操作 | 相对路径、逐组件 no-follow、root identity、target identity | 不能约束第三方进程/执行器 |
+| 执行进程（DSH） | 只设置 `cwd` 和 `workspaceSnapshot`；记录能力声明 | 不能阻止绝对路径、`..`、其他目录、工具副作用 |
+
+因此：
+
+- `mutex`/`git-worktree`/`directory-copy` 是工作副本/并发策略，不是安全隔离；
+- `shared-readonly` 不能靠 prompt 文案证明只读；
+- 没有 OS sandbox 时，不得把 Workspace 宣传为“文件系统沙箱”；
+- 需要真实隔离的场景必须等待 Phase 2.5 或独立安全阶段。
+
+#### 19.1.7 错误与审计
+
+新增错误（名称在 Contracts v3 冻结）：
+
+```text
+WORKSPACE_ROOT_UNSUPPORTED_VOLUME
+WORKSPACE_ROOT_UNWRITABLE
+WORKSPACE_PATH_INVALID
+WORKSPACE_PATH_ESCAPE
+WORKSPACE_PATH_REPARSE
+WORKSPACE_ROOT_IDENTITY_CHANGED
+WORKSPACE_PATH_RACE
+WORKSPACE_BOUNDARY_UNENFORCED
+WORKSPACE_QUARANTINED
+```
+
+进入 quarantine 时递增 `policyVersion` 和 `authorizationRevision`；审计事件只记录 workspaceId、operation、reason code、是否 quarantine、时间，不记录 rootPath、完整目标路径或文件内容。
+
+### 19.2 IW-10：Local Bootstrap 权限范围
+
+#### 19.2.1 唯一推荐方案
+
+**Local Bootstrap 永远没有 `workspace:create`，也没有 Workspace 切换能力。**
+
+`workspaceScope=single` 不是“默认 Workspace”，而是连接级硬 allowlist：
+
+- 连接只绑定 `bootstrapWorkspaceId`；
+- 只允许该 Workspace 的 API；
+- `createWorkspace`、`selectWorkspace`、`deleteWorkspace` 不在本地 stdio 允许方法表；
+- 即使 bootstrap Principal 在其他 Workspace 有 Membership，也不能通过本地连接访问；
+- 不能通过 `workspaceId` 参数切换到其他 Workspace；传入非绑定 ID 返回 `WORKSPACE_NOT_FOUND`/`WORKSPACE_SCOPE_VIOLATION`。
+
+Workspace 创建在 Phase 2.1A **只允许离线 provisioning**：
+
+1. 停止 Hub；
+2. 用 `bootstrap-v3`/管理 CLI 执行 root 校验（IW-09）、创建 Workspace、Owner Membership、审计；
+3. 更新 bootstrap 配置指向已有 Workspace；
+4. 正常启动只绑定，不创建。
+
+不改变现有 `config/windows.json` 的 `identity` 格式；不增加 `allowWorkspaceCreate` 字段，因为“可配置地恢复全局创建”本身就是错误默认。`workspace:create` 不在 Local Bootstrap 的能力集合中，不能通过配置打开。
+
+#### 19.2.2 与权限矩阵的关系
+
+- `workspace:create` 不是 Owner/Admin/Operator 的 Workspace 角色权限；
+- 它不是 Delegation scope（IW-04/6.2 已禁止治理委托）；
+- Agent 永远不能创建 Workspace；
+- Local Bootstrap User 即使同时是 Workspace Owner，也只能管理该 Workspace，不能创建新 Workspace；
+- `workspace:create` 属于**部署/管理能力**，不属于普通业务 RBAC。
+
+#### 19.2.3 未来多 Workspace 管理接口
+
+如果未来需要创建/切换多个 Workspace，必须使用独立的管理上下文，而不是复用本地 stdio：
+
+```text
+Endpoint:        future admin API / offline management CLI
+Actor:           active User
+Capability:      workspace:create（显式部署能力，不是 Workspace 角色）
+AuthContext:    管理连接，managementScope=multi_workspace
+Delegation:     不允许；Agent 不能持有
+Target owner:   创建时显式指定 active User，且必须成为唯一 Owner
+Audit:          workspace.created + system audit; root 不进入事件
+```
+
+- 本地 stdio 的 `workspaceScope=single` 永远不升级为 `multi_workspace`；
+- 管理接口必须单独认证、单独监听/命令入口，不复用 bootstrap Principal 的连接；
+- 如果暂时没有该接口，新增 Workspace 只能离线 provisioning，不能“先创建再切换”。
+
+#### 19.2.4 失败语义
+
+| 情况 | 错误 |
+|---|---|
+| Local Bootstrap 调用 `createWorkspace` | `WORKSPACE_CREATE_NOT_ALLOWED` |
+| Local Bootstrap 传其他 `workspaceId` | `WORKSPACE_SCOPE_VIOLATION` / `WORKSPACE_NOT_FOUND` |
+| 配置试图启用创建 | `BOOTSTRAP_CONFIG_INVALID`（不新增开关） |
+| 离线 provisioning 未完成 | `BOOTSTRAP_NOT_INITIALIZED` |
+| 未来管理上下文缺失 | `MANAGEMENT_CONTEXT_REQUIRED` |
+
+### 19.3 IW-11：Membership 的 stored state 与 effective state
+
+#### 19.3.1 定义
+
+```text
+WorkspaceMember:
+  status                  stored: active | revoked
+  role                    stored role
+  version                 stored membership version
+  lastMembershipRevisionId
+
+MembershipEffectiveStatus:
+  active | suspended | revoked
+```
+
+- **stored state**：Membership 记录本身的状态，只由 add/leave/remove/delete principal 等显式生命周期操作改变；`active|revoked`。
+- **effective state**：授权时计算出的状态，可能因 Principal、Workspace 状态而变化；不写回 `WorkspaceMember.status`。
+- **effective role**：stored role；角色降级立即影响 Controller 资格。
+
+#### 19.3.2 计算公式
+
+```text
+effectiveMembership(principal, workspace):
+  if stored.status == revoked:                  -> revoked
+  if principal.deletedAt != null:               -> revoked  // 删除事务也应已置 stored=revoked
+  if principal.status != active:                -> suspended
+  if workspace.status == deleted:               -> suspended
+  if workspace.status == archived:              -> active（但 workspaceWritable=false）
+  if workspace.quarantineState == quarantined:  -> active（但 workspaceWritable=false）
+  if workspace.governanceState == ownerless_locked:
+                                                -> active（但 governance/new-work 受限）
+  else:                                         -> active
+```
+
+授权判断必须使用 `effectiveMembership`，不能在 Store 中只检查 `WorkspaceMember.status == active`。`workspaceWritable` 是独立的策略结果：`archived`/`ownerless_locked`/quarantine 时写操作按各自错误拒绝，不能把它们混成 Membership `revoked`。
+
+#### 19.3.3 状态场景
+
+| 场景 | stored | effective | 重新启用 Principal 后 | 说明 |
+|---|---|---|---|---|
+| 正常成员 | active | active | — | 正常授权 |
+| Principal disabled | active | suspended | active（自动恢复） | 不是显式撤销；Membership 记录不改 |
+| Principal deleted | revoked（删除事务写入） | revoked | 不可能（deleted 不可恢复） | 删除必须撤销 Membership |
+| Membership 显式 revoked | revoked | revoked | 仍 revoked | **不得自动复活**；重新加入创建新 revision |
+| Workspace archived | active | active | 仍 active | 只读；写操作 `WORKSPACE_ARCHIVED` |
+| Workspace deleted | active（可保留） | suspended | — | 仅 system recovery；不是 Membership revoked |
+| Workspace path quarantine | active | active | — | `workspaceWritable=false`；拒绝新写/执行，不把成员全部踢出 |
+| governance ownerless | active | active | — | 只阻断治理/新工作；不把成员全部踢出 |
+| 角色降到 viewer | active | active（role=viewer） | — | Controller 冻结；成员仍可读 |
+
+#### 19.3.4 显式撤销不可复活
+
+- `revokeMembership` 设置 stored `status=revoked`、`revokedAt`、`revokedReason`，追加 `MembershipRevision`；
+- 之后 `enablePrincipal` 只改变 Principal 状态，不得把 stored `revoked` 改回 active；
+- 重新加入必须调用新的 `addMember`/邀请接受，创建新 `MembershipRevision`，并重新授予角色；
+- 旧 Delegation、旧 ArtifactGrant、旧 Controller 身份不自动恢复；
+- 任何“re-enable 自动恢复所有权限”的实现都视为违反本决策。
+
+#### 19.3.5 审计历史
+
+新增 append-only 集合：
+
+```text
+MembershipRevision:
+  membershipRevisionId
+  workspaceId
+  principalId
+  version
+  storedStatus             active | revoked
+  role
+  actorPrincipalId
+  time
+  reason
+  previousRevisionId
+```
+
+规则：
+
+- add、role change、leave、remove、delete principal、re-add、owner transfer（两个 Membership 的 role 变化）都追加 revision；
+- 不覆盖旧 revision，不物理删除；
+- `WorkspaceMember` 只保存当前投影和 `lastMembershipRevisionId`；
+- `membership.added/role_changed/removed` 事件与 revision 关联，事件不能替代完整历史；
+- Principal disabled/enable 不改 Membership stored state，因此不写 MembershipRevision；由 `principal.disabled/enabled` 事件和 `authorizationRevision` 记录 effective 变化；
+- 审计读取必须能还原“何时、由谁、为什么”改变 stored Membership。
+
+#### 19.3.6 版本与缓存
+
+- stored Membership 变更：`membershipVersion++`、`authorizationRevision++`、追加 revision；
+- Principal disable/enable/delete：`principalVersion++`、`authorizationRevision++`；
+- Workspace archive/delete/restore/owner/policy：`policyVersion++`、`authorizationRevision++`；
+- `AuthorizationContext` 同时带 `principalVersion`、`membershipVersion`、`workspacePolicyVersion`、`authorizationRevision`；
+- Store commit 必须重新计算 effective，不能信任调用方缓存的“membership active”；
+- 任何 effective 状态变化后，旧连接/订阅/negative cache 都必须失效；
+- 不允许把 `effectiveStatus` 长期缓存到没有版本的请求上下文。
+
+#### 19.3.7 与 AD-08 的一致性
+
+- Principal disabled/delete、Membership 显式 revoked、角色降到 operator 以下时，Controller 必须冻结（AD-08）；
+- running Execution 继续，不伪造 cancelled；
+- queued Execution 不自动 dispatch；
+- 显式 revoked 的 Membership 不会因 Principal 恢复 active 而恢复，因此不能靠“重新启用”绕过撤权；
+- 这与 AD-08 的“撤销立即失效、运行中执行继续”一致。
+
+---
+
+## 20. Phase 2.1A.1 结论
+
+三项补充把原先的模糊点收敛为可执行规则：
+
+1. **IW-09**：Workspace root 的字符串路径与文件系统身份分离；Phase 2.1A 只提供 cooperative path guard，不能阻止恶意执行器或路径替换；真实隔离需要 native handle-relative 或 OS sandbox，尚未实现。
+2. **IW-10**：Local Bootstrap 永远没有 `workspace:create`，`workspaceScope=single` 是硬 allowlist；Workspace 只能离线 provisioning 或未来独立管理上下文创建，不改变现有配置格式。
+3. **IW-11**：Membership 区分 stored/effective；授权只看 effective；显式 revoked 不因 Principal 恢复 active 而复活；用 append-only `MembershipRevision` 保留审计历史。
+
+本轮仍只是文档澄清，不实现路径隔离、Membership API 或任何 Phase 2.1B 能力。
