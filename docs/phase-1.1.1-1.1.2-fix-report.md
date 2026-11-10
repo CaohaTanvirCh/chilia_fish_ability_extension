@@ -2,7 +2,7 @@
 
 日期：2026-11-10（Asia/Hong_Kong）。版本：0.1.2。范围：仅 Windows 原生 DSH ACP Companion Hub；未接入 Cyrene、AstrBot、QQ/NapCat、Bilibili，未进入 Phase 2。
 
-结论：N01–N09 均已实现修复并有对应测试；其中 N01/N02/N06 的故障注入使用模拟 ACP 或注入执行器，N09 的真实 DSH 回归已重新运行并修正证据表述。仍存在未验证项，见第 6 节。
+结论：N01–N09 的主要修复已实现并有对应测试；其中 N01/N02/N06 的故障注入使用模拟 ACP 或注入执行器，N09 的真实 DSH 回归已重新运行并修正表述。独立最终审查随后发现 N02 的 `recoveryRequired` 闭环和 N05 的投影 fail-closed 仍有残余，已在 Phase 1.1.3 关闭，见 `docs/phase-1.1.3-fix-report.md`。仍存在未验证项，见第 6 节。
 
 ---
 

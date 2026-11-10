@@ -121,3 +121,15 @@
 - 真实Windows DSH ACP回归通过，日志logs/real-v2-2026-11-10T05-59-41-670Z.jsonl、控制台logs/phase1.1.1-real-console.txt。该回归仍只证明dispatch intent后kill，不证明远端执行或工具副作用。
 - 修复报告docs/phase-1.1.1-1.1.2-fix-report.md，验收文档已增加Phase1.1.1/1.1.2复核节并修正N09表述。
 - 仍明确未验证：真实OS级不可杀进程、真实DSH终态崩溃窗口、真实工具及孙进程、长时间浸泡、Desktop UI同步、多客户端。停止等待用户审阅，不进入Phase2。
+
+## 2026-11-10 — Phase 1.1.3：N02 恢复标志与 N05 Store fail-closed
+
+- 依据 docs/phase-1.1-final-review.md 修复两个 P2，未进入 Phase2，未接入 bot。
+- N02：reconcileTask/closeSession 对 closed+recoveryRequired=true 做本地归一化并清为 false；远端 resume/close 成功后的提交显式写 closed/false；远端成功但本地 commit 失败时不报告成功，状态保持 unknown/recoveryRequired=true，health 降级，可由新 Executor 重试。历史 TERMINAL_SESSION_UNSETTLED 诊断不删除。
+- N02 测试：crash-v2 覆盖 afterTerminalCommit 恢复后 closed/false、诊断保留、再次 reconcile/close 稳定、下一 Execution 正常；直接覆盖 closed+recoveryRequired=true；覆盖远端关闭成功但本地 commit 抛 EIO 的失败路径与重试。
+- N05：Store 对含 Execution 的 Task 强制要求 status、latestExecutionId、activeExecutionId、unresolvedExecutionIds、sessionId、result、duplicateExecutionRisk、integrityAlerts；unresolved 必须与真实 unknown/interrupted 完全一致；latest/result/session/active 必须一致；resultIntegrity 枚举、integrityAlerts execution 归属/确认字段、duplicate risk 一并校验。缺失/空/幽灵/跨 Task/重复均以 VALIDATION 拒绝，不静默修复。
+- N05 Executor：startExecution 不再使用 `?? []`；缺失投影抛 INVALID_TASK_PROJECTION，不 commit、不启动 transport。显式 acknowledge unknown 后原 Execution 与 duplicate risk 仍保留。
+- N05 测试：新增 test/n05-store.test.mjs（Store 加载/提交 + Executor 调用路径），覆盖缺失/空 unresolved、正确 unresolved 仍阻止启动、显式 acknowledge、非法 resultIntegrity、alert 不存在/跨 Task、active/latest 缺失/错误/跨 Task、unresolved 幽灵/跨 Task/重复、正常 completed/failed/cancelled、v1→v2 迁移合法加载。
+- 迁移兼容：v1→v2 迁移快照仍可加载；旧 v2 若缺必填投影将被拒绝，不提供静默默认值/自动修复。
+- 最终自测：unit 76、simulated 37、合并 113，均0失败；N02/N05 关键反例重复3次×20通过；真实Windows DSH ACP回归通过（日志logs/real-v2-2026-11-10T06-34-55-196Z.jsonl）。
+- 版本更新为0.1.3；修复报告docs/phase-1.1.3-fix-report.md。结论仍为CONDITIONAL PASS，等待独立测试会话复验；不自行开始Phase2。

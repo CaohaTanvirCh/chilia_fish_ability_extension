@@ -40,7 +40,7 @@ Task投影：有任一历史unknown/interrupted或未确认的完整性警报，
 
 ## Store与容量
 
-公共Store为snapshot+commit(expectedRevision,changes)，原子提交Task/Execution/Binding/Request/Event。独占锁，v2文件state-v2.json；任何模块不得直接解析其他模块存储。事件只有ID/状态/字节数，不含累积结果。Store校验引用、Session/Task所有权、active唯一、`latestExecutionId`必须指向最后创建的Execution、`Task.result`与最新Execution一致、`Task.sessionId`与最新Binding一致，以及lifecycle/submission/availability枚举；不一致快照以VALIDATION拒绝，不静默修复。
+公共Store为snapshot+commit(expectedRevision,changes)，原子提交Task/Execution/Binding/Request/Event。独占锁，v2文件state-v2.json；任何模块不得直接解析其他模块存储。事件只有ID/状态/字节数，不含累积结果。对含Execution的Task，Store强制要求`status`、`latestExecutionId`、`activeExecutionId`、`unresolvedExecutionIds`、`sessionId`、`result`、`duplicateExecutionRisk`、`integrityAlerts`字段存在；`unresolvedExecutionIds`必须与真实unknown/interrupted集合完全一致。Store校验引用、Session/Task所有权、active唯一、`latestExecutionId`必须指向最后创建的Execution、`Task.result`与最新Execution一致、`Task.sessionId`与最新Binding一致，校验`resultIntegrity`枚举，以及`integrityAlerts`必须引用当前Task的真实Execution并校验确认字段。缺失、空数组、幽灵/跨Task引用或不一致快照以VALIDATION拒绝，不静默修复，也不会把缺失投影当成空数组。
 
 默认输出1MiB/Execution；64KiB或250ms批量，至多32次时间/早期提交后停用时间刷新，字节刷新始终保留，终态强制flush；默认至多约49次输出提交。内存批次至多64KiB，允许一个大帧瞬时达到剩余额度后立即flush。Store32MiB/20,000events/1000Tasks/5000Executions；预留18MiB和1024events用于最多8个在途执行及终态。过高水位拒绝新工作，硬限失败健康状态退化，不伪造成功。无自动历史删除；应离线归档整个Store。配置更小容量时需相应降低输出/并发参数，不能把小测试限制作为生产容量保证。
 

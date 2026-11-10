@@ -57,11 +57,88 @@ test('post-terminal crash marks binding unknown and reconcile restores the next 
   try {
     const task = (await x.listTasks())[0];
     await x.resumeTask(task.taskId);
-    assert.equal((await x.store.snapshot()).bindings[0].availability, 'closed');
+    const restored = await x.store.snapshot();
+    assert.equal(restored.bindings[0].availability, 'closed');
+    assert.equal(restored.bindings[0].recoveryRequired, false);
+    assert.ok(restored.executions[0].diagnostics.some(item => item.code === 'TERMINAL_SESSION_UNSETTLED'));
+    await x.reconcileTask(task.taskId);
+    await x.closeSession(task.taskId);
+    const stable = await x.store.snapshot();
+    assert.equal(stable.bindings[0].availability, 'closed');
+    assert.equal(stable.bindings[0].recoveryRequired, false);
     const next = await x.startExecution(task.taskId, { requestKey: 'after-terminal-crash', prompt: 'next' });
     await x.waitForTask(task.taskId);
     assert.equal((await x.getExecution(next.executionId)).status, 'completed');
   } finally { await x.stop(); }
+});
+
+test('closed binding with stale recoveryRequired is normalized without a remote close', { timeout: 15000 }, async t => {
+  const dir = directory(t); assert.equal(child(dir, 'afterTerminalCommit'), 73);
+  let starts = 0;
+  class RestoreTransport {
+    async start() { starts++; return { agentCapabilities: { sessionCapabilities: { resume: {}, close: {} } } }; }
+    async request() { return {}; }
+    async notify() {}
+    async stop() {}
+  }
+  const x = new DshAcpExecutor({ store: new ExecutionStore(dir), transportFactory: () => new RestoreTransport(), sessionOperationTimeoutMs: 1000, cancelTimeoutMs: 100 });
+  await x.start();
+  try {
+    const task = (await x.listTasks())[0];
+    await x.resumeTask(task.taskId);
+    let snapshot = await x.store.snapshot();
+    assert.equal(snapshot.bindings[0].availability, 'closed');
+    assert.equal(snapshot.bindings[0].recoveryRequired, false);
+    const binding = snapshot.bindings[0];
+    x.store.commit(snapshot.revision, { bindings: [{ ...binding, recoveryRequired: true }] });
+    await x.closeSession(task.taskId);
+    snapshot = await x.store.snapshot();
+    assert.equal(snapshot.bindings[0].availability, 'closed');
+    assert.equal(snapshot.bindings[0].recoveryRequired, false);
+    assert.equal(starts, 1);
+    x.store.commit(snapshot.revision, { bindings: [{ ...snapshot.bindings[0], recoveryRequired: true }] });
+    await x.reconcileTask(task.taskId);
+    snapshot = await x.store.snapshot();
+    assert.equal(snapshot.bindings[0].recoveryRequired, false);
+    assert.equal(starts, 1);
+  } finally { await x.stop(); }
+});
+
+test('remote close success followed by local commit failure is not reported as recovered', { timeout: 15000 }, async t => {
+  const dir = directory(t); assert.equal(child(dir, 'afterTerminalCommit'), 73);
+  let failClosedCommit = true;
+  const base = new ExecutionStore(dir);
+  const store = {
+    open: () => base.open(), close: () => base.close(), snapshot: () => base.snapshot(), healthCheck: () => base.healthCheck(),
+    commit: (revision, changes) => {
+      if (failClosedCommit && changes.bindings?.some(binding => binding.availability === 'closed')) throw Object.assign(new Error('injected binding commit failure'), { code: 'EIO' });
+      return base.commit(revision, changes);
+    },
+  };
+  class RestoreTransport {
+    async start() { return { agentCapabilities: { sessionCapabilities: { resume: {}, close: {} } } }; }
+    async request() { return {}; }
+    async notify() {}
+    async stop() {}
+  }
+  const x = new DshAcpExecutor({ store, transportFactory: () => new RestoreTransport(), sessionOperationTimeoutMs: 1000, cancelTimeoutMs: 100 });
+  await x.start();
+  const task = (await x.listTasks())[0];
+  await assert.rejects(x.reconcileTask(task.taskId, {restoreContext: true}), /injected binding commit failure/);
+  const failed = await x.store.snapshot();
+  assert.equal(failed.bindings[0].availability, 'unknown');
+  assert.equal(failed.bindings[0].recoveryRequired, true);
+  assert.equal((await x.healthCheck()).healthy, false);
+  await x.stop();
+  failClosedCommit = false;
+  const y = new DshAcpExecutor({ store: new ExecutionStore(dir), transportFactory: () => new RestoreTransport(), sessionOperationTimeoutMs: 1000, cancelTimeoutMs: 100 });
+  await y.start();
+  try {
+    await y.reconcileTask(task.taskId, {restoreContext: true});
+    const recovered = await y.store.snapshot();
+    assert.equal(recovered.bindings[0].availability, 'closed');
+    assert.equal(recovered.bindings[0].recoveryRequired, false);
+  } finally { await y.stop(); }
 });
 
 test('kill executor child during cancellation leaves unknown without fabricated cancellation receipt (simulated ACP)', { timeout: 15000 }, async t => {

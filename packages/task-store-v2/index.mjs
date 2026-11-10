@@ -9,6 +9,7 @@ const ACTIVE = new Set(['queued', 'running']);
 const SUBMISSIONS = new Set(['not_started', 'dispatch_intent', 'response_observed']);
 const LIFECYCLES = new Set(['open', 'closed']);
 const AVAILABILITIES = new Set(['closed', 'active', 'unknown']);
+const RESULT_INTEGRITY = new Set(['partial', 'observed_complete', 'uncertain']);
 const IMMUTABLE = ['taskId', 'bindingId', 'status', 'prompt', 'result', 'completionEvidence', 'resultIntegrity'];
 const COLLECTIONS = { tasks: 'taskId', executions: 'executionId', bindings: 'bindingId', requests: 'key' };
 const DEFAULTS = { maxBytes: 32 * 1024 * 1024, maxEvents: 20000, maxTasks: 1000, maxExecutions: 5000 };
@@ -154,6 +155,7 @@ export class ExecutionStore {
     for (const execution of state.executions) {
       if (!maps.tasks.has(execution.taskId) || !STATUSES.has(execution.status)) throw fault('VALIDATION', 'Invalid execution task/status');
       if (execution.submission != null && !SUBMISSIONS.has(execution.submission)) throw fault('VALIDATION', 'Invalid execution submission');
+      if (execution.resultIntegrity != null && !RESULT_INTEGRITY.has(execution.resultIntegrity)) throw fault('VALIDATION', 'Invalid execution resultIntegrity');
       const binding = execution.bindingId == null ? null : maps.bindings.get(execution.bindingId);
       if (execution.bindingId != null && (!binding || binding.taskId !== execution.taskId)) throw fault('VALIDATION', 'Execution binding ownership mismatch');
       evidence(execution);
@@ -168,27 +170,38 @@ export class ExecutionStore {
       if (task.status != null && !STATUSES.has(task.status)) throw fault('VALIDATION', 'Invalid task status');
       if (task.lifecycle != null && !LIFECYCLES.has(task.lifecycle)) throw fault('VALIDATION', 'Invalid task lifecycle');
       if (task.duplicateExecutionRisk != null && typeof task.duplicateExecutionRisk !== 'boolean') throw fault('VALIDATION', 'Invalid duplicateExecutionRisk');
+      const attempts = state.executions.filter(item => item.taskId === task.taskId);
       if (task.integrityAlerts != null) {
         if (!Array.isArray(task.integrityAlerts)) throw fault('VALIDATION', 'integrityAlerts must be an array');
         for (const alert of task.integrityAlerts) {
           record(alert);
-          if (!alert || typeof alert.code !== 'string' || !alert.code) throw fault('VALIDATION', 'Invalid integrity alert');
-          if (alert.acknowledgedAt != null && typeof alert.acknowledgedAt !== 'string') throw fault('VALIDATION', 'Invalid integrity acknowledgement');
+          if (!alert || typeof alert.executionId !== 'string' || !alert.executionId) throw fault('VALIDATION', 'Integrity alert must reference an execution');
+          const alertExecution = maps.executions.get(alert.executionId);
+          if (!alertExecution || alertExecution.taskId !== task.taskId) throw fault('VALIDATION', 'Integrity alert references another task or unknown execution');
+          if (typeof alert.code !== 'string' || !alert.code) throw fault('VALIDATION', 'Invalid integrity alert');
+          if (alert.acknowledgedAt != null && (typeof alert.acknowledgedAt !== 'string' || !Number.isFinite(Date.parse(alert.acknowledgedAt)))) throw fault('VALIDATION', 'Invalid integrity acknowledgement time');
+          if (alert.acknowledgedBy != null && typeof alert.acknowledgedBy !== 'string') throw fault('VALIDATION', 'Invalid integrity acknowledgement actor');
+          if (alert.acknowledgedAt != null && !alert.acknowledgedBy) throw fault('VALIDATION', 'Integrity acknowledgement must name an actor');
+          if (alert.note != null && typeof alert.note !== 'string') throw fault('VALIDATION', 'Invalid integrity acknowledgement note');
         }
       }
       for (const key of ['latestExecutionId', 'activeExecutionId']) if (task[key] != null && maps.executions.get(task[key])?.taskId !== task.taskId) throw fault('VALIDATION', `Invalid ${key}`);
       const view = projection(state, task);
-      const attempts = state.executions.filter(item => item.taskId === task.taskId);
-      if (Object.hasOwn(task, 'activeExecutionId') && task.activeExecutionId !== (view.active?.executionId ?? null)) throw fault('VALIDATION', 'Incorrect active execution projection');
-      if (state.executions.some(item => item.taskId === task.taskId) && task.status != null && task.status !== view.status) throw fault('VALIDATION', 'Incorrect task status projection');
-      if (task.unresolvedExecutionIds != null && (!Array.isArray(task.unresolvedExecutionIds) || !isDeepStrictEqual([...task.unresolvedExecutionIds].sort(), [...view.unresolved].sort()))) throw fault('VALIDATION', 'Incorrect unresolved execution projection');
       if (attempts.length) {
+        for (const key of ['status', 'latestExecutionId', 'activeExecutionId', 'unresolvedExecutionIds', 'sessionId', 'result', 'duplicateExecutionRisk', 'integrityAlerts']) {
+          if (!Object.hasOwn(task, key)) throw fault('VALIDATION', `Task is missing required projection field ${key}`);
+        }
+        if (!Array.isArray(task.unresolvedExecutionIds)) throw fault('VALIDATION', 'unresolvedExecutionIds must be an array');
+        if (!Array.isArray(task.integrityAlerts)) throw fault('VALIDATION', 'integrityAlerts must be an array');
+        if (task.activeExecutionId !== (view.active?.executionId ?? null)) throw fault('VALIDATION', 'Incorrect active execution projection');
+        if (task.status !== view.status) throw fault('VALIDATION', 'Incorrect task status projection');
+        if (!isDeepStrictEqual([...task.unresolvedExecutionIds].sort(), [...view.unresolved].sort())) throw fault('VALIDATION', 'Incorrect unresolved execution projection');
         const latest = attempts.at(-1);
         if (task.latestExecutionId !== latest.executionId) throw fault('VALIDATION', 'latestExecutionId does not point to the latest execution');
         if (!isDeepStrictEqual(task.result, latest.result)) throw fault('VALIDATION', 'Task result does not match latest execution result');
         const latestBinding = latest.bindingId == null ? null : maps.bindings.get(latest.bindingId);
         const sessionId = latestBinding?.sessionId ?? null;
-        if ((task.sessionId ?? null) !== sessionId) throw fault('VALIDATION', 'Task session does not match latest execution binding');
+        if (task.sessionId !== sessionId) throw fault('VALIDATION', 'Task session does not match latest execution binding');
       } else if (task.latestExecutionId != null) throw fault('VALIDATION', 'latestExecutionId references no execution');
       if (view.unresolved.length && task.duplicateExecutionRisk !== true) throw fault('VALIDATION', 'duplicateExecutionRisk must be true for unresolved executions');
       if (task.integrityAlerts?.length && task.duplicateExecutionRisk !== true) throw fault('VALIDATION', 'duplicateExecutionRisk must be true for integrity alerts');

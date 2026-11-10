@@ -1,6 +1,6 @@
 {
   "name": "fish-ability-extensions",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,7 +11,7 @@
     "start": "node apps/companion-hub/main.mjs",
     "test:integration": "node scripts/integration-v2.mjs",
     "test:integration:legacy": "node scripts/integration.mjs",
-    "test:unit": "node --test test/paths.test.mjs test/task-store.test.mjs test/store-v2.test.mjs test/executor.test.mjs test/executor-v2.test.mjs test/executor-v2-races.test.mjs test/recovery-v2.test.mjs test/migration-v2.test.mjs",
+    "test:unit": "node --test test/paths.test.mjs test/task-store.test.mjs test/store-v2.test.mjs test/executor.test.mjs test/executor-v2.test.mjs test/executor-v2-races.test.mjs test/recovery-v2.test.mjs test/n05-store.test.mjs test/migration-v2.test.mjs",
     "test:simulated": "node --test test/transport.test.mjs test/hub.test.mjs test/hub-lifecycle.test.mjs test/hub-stop.test.mjs test/crash-v2.test.mjs test/simulated-acp-v2.test.mjs",
     "probe": "node scripts/probe-session.mjs"
   },

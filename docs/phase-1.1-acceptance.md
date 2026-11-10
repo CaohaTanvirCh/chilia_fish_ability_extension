@@ -82,7 +82,7 @@ Task：未解决unknown优先于新执行成功，activeExecutionId单独查询�
 
 ## Phase 1.1.1 / 1.1.2 修复后复核
 
-独立审查 N01–N09 已按 `docs/phase-1.1.1-1.1.2-fix-report.md` 修复。当前版本 0.1.2 的复核结果：
+独立审查 N01–N09 的主要修复见 `docs/phase-1.1.1-1.1.2-fix-report.md`；最终审查仍指出 N02 的 `recoveryRequired` 闭环和 N05 的投影 fail-closed 残余，已在 Phase 1.1.3 关闭（`docs/phase-1.1.3-fix-report.md`）。当前版本 0.1.2 的复核结果：
 
 | 类别 | 结果 | 日志 |
 | --- | --- | --- |
@@ -92,4 +92,18 @@ Task：未解决unknown优先于新执行成功，activeExecutionId单独查询�
 | 关键竞态重复运行 | 3 次 × 25 项全部通过 | `logs/phase1.1.1-repeat.txt` |
 | 合并全量本地测试 | 100 passed / 0 failed | `logs/phase1.1.2-all.txt` |
 
-本节的 65/35 是修复后数量；上方 57/31 是 Phase 1.1 当时的历史结果，不应混用。N09 证据边界以本节和修复报告为准：真实 kill 仅证明 dispatch intent 后中断，不证明 DSH 已执行 Prompt 或发生工具副作用。其余未验证项（真实长任务、工具及孙进程、Desktop UI、多客户端）仍保持未验证。
+本节的 65/35 是 Phase 1.1.2 修复后数量；上方 57/31 是 Phase 1.1 当时的历史结果，不应混用。N09 证据边界以本节和修复报告为准：真实 kill 仅证明 dispatch intent 后中断，不证明 DSH 已执行 Prompt 或发生工具副作用。其余未验证项（真实长任务、工具及孙进程、Desktop UI、多客户端）仍保持未验证。
+
+## Phase 1.1.3 修复后复核
+
+最终审查的 N02（`closed + recoveryRequired=true` 未闭环）与 N05（未知 Execution 投影可省略而 fail-open）已修复。当前版本 0.1.3 的自测结果：
+
+| 类别 | 结果 | 日志 |
+| --- | --- | --- |
+| Unit/Store/迁移 | 76 passed / 0 failed | `logs/phase1.1.3-unit.txt` |
+| Simulated ACP/Transport/Hub/fault | 37 passed / 0 failed | `logs/phase1.1.3-simulated.txt` |
+| 合并全量本地测试 | 113 passed / 0 failed | `logs/phase1.1.3-all.txt` |
+| N02/N05 关键反例重复运行 | 3 次 × 20 项全部通过 | `logs/phase1.1.3-repeat.txt` |
+| 真实 Windows DSH ACP | PASS；8 组检查 | `logs/phase1.1.3-real-console.txt`、`logs/real-v2-2026-11-10T06-34-55-196Z.jsonl` |
+
+本阶段仍为 CONDITIONAL PASS，开发自测不替代独立验收。N02 的真实 DSH 崩溃窗口、N01/N06 的真实 OS 不可杀进程、真实长任务/工具副作用/Desktop UI/多客户端仍未验证。

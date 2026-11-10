@@ -29,14 +29,17 @@ async function setup(t,{limits={},wrapStore}={}){
 }
 test('failed and repeated context recovery uses fresh transports without mutating executions',async t=>{
  const {x,server}=await setup(t);const task=await x.createTask(input('original'));await x.waitForTask(task.taskId);const original=await x.getExecution(task.latestExecutionId);
+ const snap=await x.store.snapshot();const binding=snap.bindings[0];x.store.commit(snap.revision,{bindings:[{...binding,availability:'unknown',recoveryRequired:true}]});
  server.resumeError=true;await assert.rejects(x.reconcileTask(task.taskId,{restoreContext:true}),/restore unavailable/);
  assert.deepEqual(await x.getExecution(task.latestExecutionId),original);assert.equal(server.transports.at(-1).stops,1);
  server.resumeError=false;
  for(let i=0;i<3;i++){await x.reconcileTask(task.taskId,{restoreContext:true});assert.deepEqual(await x.getExecution(task.latestExecutionId),original);assert.equal(server.transports.at(-1).stops,1);}
- assert.equal(server.transports.length,5);assert.equal(server.transports.flatMap(p=>p.calls).filter(m=>m==='session/prompt').length,1);
+ // create + one failed remote reconcile + one successful remote reconcile; later closed bindings are local no-ops.
+ assert.equal(server.transports.length,3);assert.equal(server.transports.flatMap(p=>p.calls).filter(m=>m==='session/prompt').length,1);
 });
 test('stop owns a context transport while resume is pending and preserves completed history',async t=>{
  const {x,server,dir,factory}=await setup(t);const task=await x.createTask(input('restore-stop'));await x.waitForTask(task.taskId);const original=await x.getExecution(task.latestExecutionId);
+ const snap=await x.store.snapshot();const binding=snap.bindings[0];x.store.commit(snap.revision,{bindings:[{...binding,availability:'unknown',recoveryRequired:true}]});
  server.resumeGate=deferred();const recovery=x.reconcileTask(task.taskId,{restoreContext:true});recovery.catch(()=>{});
  await new Promise(resolve=>setImmediate(resolve));const p=server.transports.at(-1);await p.resumeEntered.promise;
  await x.stop();await assert.rejects(recovery,/transport stopped/);assert.ok(p.stops>=1);
