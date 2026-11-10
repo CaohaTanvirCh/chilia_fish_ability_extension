@@ -5,4 +5,4 @@
 {"time":"2026-11-09T14:26:31.382Z","type":"update","data":{"sessionId":"0c386c9d-d283-418b-9365-26b95ab146d0","update":{"used":6220,"size":1000000,"sessionUpdate":"usage_update"}}}
 {"time":"2026-11-09T14:26:31.382Z","type":"prompt","data":{"stopReason":"end_turn"}}
 {"time":"2026-11-09T14:26:31.384Z","type":"close","data":{}}
-{"time":"2026-11-09T14:26:31.418Z","type":"list","data":{"sessions":[{"sessionId":"0c386c9d-d283-418b-9365-26b95ab146d0","cwd":"C:\\Users\\26648\\fish_abil_ext"}]}}
+{"time":"2026-11-09T14:26:31.418Z","type":"list","data":{"sessions":[{"sessionId":"0c386c9d-d283-418b-9365-26b95ab146d0","cwd":"<repo-root>"}]}}

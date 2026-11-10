@@ -3,7 +3,7 @@
 Windows 原生 TaskExecutor 可靠性实现；未接入 AstrBot、Cyrene、QQ/NapCat 或 Bilibili，未开启自启动。
 
 ```powershell
-Set-Location C:\Users\26648\fish_abil_ext
+Set-Location C:\path\to\fish_abil_ext
 npm ci --ignore-scripts
 npm run test:unit
 npm run test:simulated

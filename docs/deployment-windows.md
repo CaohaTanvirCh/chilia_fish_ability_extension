@@ -7,7 +7,7 @@
 在 PowerShell 中：
 
 ```powershell
-Set-Location C:\Users\26648\fish_abil_ext
+Set-Location C:\path\to\fish_abil_ext
 npm ci --ignore-scripts
 npm test
 npm run test:integration
@@ -32,7 +32,7 @@ Hub 就绪后，在 stdin 每行输入一个 JSON：
 
 ```json
 {"id":"health-1","method":"healthCheck","args":[]}
-{"id":"task-1","method":"createTask","args":[{"cwd":"C:\\Users\\26648\\fish_abil_ext","prompt":"只回复你好，不调用工具。","requestKey":"hello-unique-request"}]}
+{"id":"task-1","method":"createTask","args":[{"cwd":"C:\\path\\to\\fish_abil_ext","prompt":"只回复你好，不调用工具。","requestKey":"hello-unique-request"}]}
 {"id":"list-1","method":"listTasks","args":[]}
 {"id":"stop-1","method":"stop","args":[]}
 ```
@@ -66,4 +66,4 @@ stdout 混合事件和请求结果，按 type/id 区分；使用 Node 子进程�
 
 ACP Session 与 Desktop UI 的同步尚未验证，不能据此声称桌面界面会展示同一个任务。当前使用公开协议恢复 ACP 自己创建的会话；不会试图控制正在运行的桌面会话。对桌面 UI 的可见性验证仍是独立待办，不影响此 PoC 的原生 ACP 通路结论。
 
-旧的 WSL 安装尝试被取消，可能留有 `/home/chilia/.local/share/fish-abil-ext/runtime` 中的部分下载；不被当前项目运行使用，也未作为验收结果。
+旧的 WSL 安装尝试被取消，可能留有 `/home/<user>/.local/share/fish-abil-ext/runtime` 中的部分下载；不被当前项目运行使用，也未作为验收结果。

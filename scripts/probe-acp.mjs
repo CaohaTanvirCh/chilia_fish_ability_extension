@@ -1,7 +1,7 @@
 import {spawn} from 'node:child_process';
 import {Readable,Writable} from 'node:stream';
 import {client,methods,ndJsonStream,PROTOCOL_VERSION} from '@agentclientprotocol/sdk';
-const base='C:\\Users\\26648\\AppData\\Local\\Programs\\DeepSeek Harness';
+const base='C:\\path\\to\\DeepSeek Harness';
 const child=spawn(`${base}\\DeepSeek Harness.exe`,['--expose-internals',`${base}\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-desktop-host\\lib\\cli.js`,'--profile','acp'],{env:{...process.env,ELECTRON_RUN_AS_NODE:'1'},stdio:['pipe','pipe','pipe'],windowsHide:true});
 child.stderr.on('data',b=>process.stderr.write(b));
 child.on('error',e=>console.error(e));

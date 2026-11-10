@@ -4,7 +4,7 @@
 
 ### 需求与边界
 
-- 阅读用户提供的 `C:\Users\26648\Desktop\prompt.md` 与 `C:\Users\26648\Desktop\chatgpt_Q_A.md` 全文。
+- 阅读用户提供的 `<user-home>\Desktop\prompt.md` 与 `<user-home>\Desktop\chatgpt_Q_A.md` 全文。
 - 本阶段实现模块化 TaskExecutor 和官方 DSH ACP 适配器 PoC；通过验收后才进入 AstrBot、Cyrene、Bilibili 集成。
 - 每个运行模块必须能够独立启动、替换、测试与停用，仅通过公共接口通信。
 - DSH 只承担工作执行；不修改 DSH/Cyrene 上游，不操作 QQ/NapCat，不实现主动聊天或 B 站互动，不读取其他模块内部数据库。
@@ -14,8 +14,8 @@
 ### 环境核实
 
 - Windows 11 专业版，版本 10.0.26200。
-- Windows Node：`C:\Software\nodejs\node.exe`，v24.18.0。
-- 已安装桌面 DSH CLI：`C:\Users\26648\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`。
+- Windows Node：`node.exe`，v24.18.0。
+- 已安装桌面 DSH CLI：`<user-home>\AppData\Local\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd`。
 - CLI `--version` 实测为 0.2.2-rc.1；`--profile acp --help` 实测支持 ACP stdio 服务。
 - 早期 WSL 调查发现 Ubuntu-24.04、NVM Node 24.16.0，但登录 PATH 无 dsh。曾启动项目专用 WSL DSH 安装；用户改为 Windows 后已请求取消，最终状态为 killed（取消成功）；可能留有部分下载。项目内 WSL 安装脚本已移除，该路线不再开发。
 

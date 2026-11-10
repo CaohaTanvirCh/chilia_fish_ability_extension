@@ -83,12 +83,12 @@
 
 | 位置 | 内容 | 建议 |
 | --- | --- | --- |
-| `README.md:6` | `C:\Users\26648\fish_abil_ext` | 改为 `C:\path\to\fish_abil_ext` 或相对路径 |
-| `DEVELOPMENT.md:7` | `C:\Users\26648\Desktop\prompt.md` 等本机桌面路径 | 改为占位路径，或说明这是本机记录 |
-| `DEVELOPMENT.md:18` | `C:\Users\26648\AppData\Local\Programs\DeepSeek Harness\...` | 从配置读取，不在文档硬编码 |
-| `docs/deployment-windows.md:10,35` | 本机用户目录/用户名 `26648` | 改为通用示例 |
-| `scripts/probe-acp.mjs:4` | 硬编码 `C:\Users\26648\AppData\Local\Programs\DeepSeek Harness` | 改为读取 `config/windows.json` 或参数 |
-| `logs/*.jsonl`、`logs/*.txt` | JSON 转义后的 `C:\\Users\\26648\\...`、CLI 路径 | 公开前脱敏或只保留摘要 |
+| `README.md:6` | 本机仓库绝对路径 | 改为 `C:\path\to\fish_abil_ext` 或相对路径 |
+| `DEVELOPMENT.md:7` | 本机桌面绝对路径 | 改为占位路径，或说明这是本机记录 |
+| `DEVELOPMENT.md:18` | 本机用户目录下的 DSH CLI 路径 | 从配置读取，不在文档硬编码 |
+| `docs/deployment-windows.md:10,35` | 本机用户目录/用户名 | 改为通用示例 |
+| `scripts/probe-acp.mjs:4` | 硬编码本机用户目录下的 DSH 安装路径 | 改为读取 `config/windows.json` 或参数 |
+| `logs/*.jsonl`、`logs/*.txt` | JSON 转义后的本机用户绝对路径、CLI 路径 | 公开前脱敏或只保留摘要 |
 | Git 提交元数据 | 作者显示名和邮箱是公开提交信息 | 若公开仓库需要匿名，需重写历史，不能只改文件 |
 
 这不是运行可靠性缺陷，但属于公开仓库发布卫生问题。尤其是日志已经包含绝对路径，后续若把日志作为公开验收证据，应先脱敏。

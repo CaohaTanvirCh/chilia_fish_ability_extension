@@ -131,7 +131,7 @@ Executor refuses a task projection missing result before commit or transport
 
 - Windows 原生，未使用 WSL；
 - Node.js `v24.18.0`，npm `11.16.0`；
-- 仓库：`C:\Users\26648\fish_abil_ext`；
+- 仓库：`<repo-root>`；
 - 测试日期：2026-11-10（Asia/Hong_Kong）。
 
 本轮未运行 `npm run test:integration`。改动仅涉及 `startExecution()` 的防御字段列表，未修改 ACP transport、Store schema 或状态机；因此本轮不新增真实 DSH 证据，也不把 simulated/Fake 结果表述为真实 DSH 结果。真实 DSH 回归的既有边界仍是：`dispatch_intent` 后 kill 只证明本地持久化后中断，不证明远端执行或工具副作用。
