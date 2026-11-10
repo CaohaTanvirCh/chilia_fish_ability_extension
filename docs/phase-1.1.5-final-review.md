@@ -6,6 +6,8 @@
 - Phase 1.1.4 独立验收：`b234b26d7aedac71c1cddba17218443ad6fa997b`
 - Phase 1.1.5 实现：`8a4d5c7f75950da5892ac1d74786a5cd4006f275`
 - Phase 1.1.5 修复报告：`0c49e0424aa03fb6f32c89e78c78c9a073d771cf`
+- 独立审查：`1b6069d54b8164077697738a1ce2fcc31c6e86a1`
+- 交付卫生修复：`ba42271b6aaa931bd5d3425b1abdd79aff935b18`
 - 审查日期：2026-11-10（Asia/Hong_Kong）
 - 环境：Windows 原生，未使用 WSL
 
@@ -13,7 +15,11 @@
 
 ## 最终结论
 
-**CONDITIONAL PASS。**
+**PASS（仅限 Phase 1.1.5 本轮交付物；关闭验证基于 `ba42271`）。**
+
+`ba42271` 已完成交付卫生修复并推送到 `origin/master`；PUB-1、LOG-1 在该基线关闭。第 1–7 节保留 `1b6069d` 时点的原始审查记录和当时的 CONDITIONAL PASS 判断；修复确认与最终关闭结论见第 8 节。
+
+原审查在 `1b6069d` 时点的结论为 **CONDITIONAL PASS**，原因如下（历史记录）：
 
 N05-E1 的 `dispatchQueued` 修复本身通过：`assertTaskProjection()` 完整检查八个字段和三个类型约束；`dispatchQueued()` 在 `launch()` 之前调用守卫；独立包装 Store 反例在两种入口、八个字段和三个类型反例上全部 fail-closed，`commit=0`、`transportFactory=0`、`operations.size=0`，Task/Execution 不变。
 
@@ -23,7 +29,7 @@ N05-E1 的 `dispatchQueued` 修复本身通过：`assertTaskProjection()` 完整
 - `docs/phase-1.1.5-fix-report.md:163` 也包含本机仓库绝对路径；
 - 任务明确要求“本轮只提交独立验收报告和必要的脱敏测试日志”。
 
-这不影响运行逻辑，但使本轮不能无条件判为 PASS。若把验收范围限定为“代码/测试路径”，N05-E1 目标可以通过；若按本轮完整交付要求，必须先把这两个新增文件脱敏。
+这不影响运行逻辑，但使原审查不能无条件判为 PASS。若把验收范围限定为“代码/测试路径”，N05-E1 目标可以通过；若按本轮完整交付要求，必须先把这两个新增文件脱敏。该条件已由 `ba42271` 满足。
 
 ## 1. 代码审查
 
@@ -308,7 +314,7 @@ Executor dispatchQueued refuses a task projection missing result before commit o
 - 既有真实 DSH 的结论仍是：`dispatch_intent` 后 kill 只证明本地持久化后中断，不证明远端执行或工具副作用；
 - 本轮代码改动不涉及 ACP transport，因此没有新增真实 DSH 证据是符合范围的，但不能把模拟测试写成真实 DSH 结果。
 
-## 7. 最终判定与 Phase 2 建议
+## 7. 原审查判定与 Phase 2 建议（1b6069d 时点）
 
 | 维度 | 结论 |
 | --- | --- |
@@ -321,10 +327,10 @@ Executor dispatchQueued refuses a task projection missing result before commit o
 | 测试复跑 | 78/37/115 全部通过；3×13 通过 |
 | 范围 | 生产代码仅 helper + dispatch 顺序；无 Store/transport/schema 改动 |
 | 分支/远端 | 审查开始时本地与远端均为 `0c49e04` |
-| 交付卫生 | before-probe 日志和修复报告含本机绝对路径，P2 |
+| 交付卫生 | 1b6069d 时点：before-probe 日志和修复报告含本机绝对路径，P2；已由 `ba42271` 关闭（见第 8 节） |
 | 真实 DSH | 未运行；不宣称 |
 
-**最终：CONDITIONAL PASS。**
+**原审查结论（1b6069d 时点）：CONDITIONAL PASS。**
 
 - **代码/测试层面：PASS。** `dispatchQueued` 的投影守卫已完整覆盖八个字段和类型约束，且在 launch/commit/transport 之前执行；`startExecution` 复用 helper 后语义不变；所有独立反例和测试通过。
 - **交付层面：CONDITIONAL PASS。** 新增 `logs/phase1.1.5-before-probe.txt` 和 `docs/phase-1.1.5-fix-report.md:163` 含本机绝对路径，未满足“必要的脱敏测试日志”要求。只需脱敏这两个新增文件，不需要修改生产代码；脱敏后可重新评估为 PASS。
@@ -332,3 +338,53 @@ Executor dispatchQueued refuses a task projection missing result before commit o
 Phase 2 建议：N05-E1 的代码修复已经达到进入下一阶段设计讨论的条件；但在进入 Phase 2 实现前，应先完成本轮日志/报告脱敏，并继续保留真实 DSH、工具副作用、N01/N03 等既有未验证边界。
 
 本轮不进入 Phase 2，不修改生产代码、测试实现、Store schema、ACP transport 或配置。
+
+## 8. 交付卫生修复确认与关闭结论（ba42271）
+
+### 8.1 提交与状态
+
+- 交付卫生修复：`ba42271b6aaa931bd5d3425b1abdd79aff935b18`（`chore: phase 1.1.5.1 sanitize delivery artifacts`）。
+- 该提交仅修改 2 个文件：`docs/phase-1.1.5-fix-report.md` 和 `logs/phase1.1.5-before-probe.txt`；未修改生产代码、测试、Store schema、ACP transport、状态机或配置。
+- 该提交已推送；`origin/master` 当前为 `ba42271`。本报告作为 `ba42271` 之后的单独文档提交，尚未推送；修复验证时 `HEAD == origin/master == ba42271`，工作区干净。
+- 第 1–7 节保留 `1b6069d` 时点的原始审查过程、证据和历史提交信息；本节只追加修复确认和关闭结论。
+
+### 8.2 修复内容
+
+- `docs/phase-1.1.5-fix-report.md:163` 的仓库字段已改为 `<repo-root>`。
+- `logs/phase1.1.5-before-probe.txt` 中 7 处本机绝对路径/账户名已替换为 `<repo-root>`；测试文件路径保留为 `<repo-root>\test\...`，源码堆栈保留为 `<repo-root>/packages/...`。
+- 同一日志的 TAP 输出尾随空格已清理。
+
+### 8.3 复核结果
+
+| 检查项 | 结果 |
+| --- | --- |
+| 验证时 `HEAD == origin/master == ba42271` | 通过 |
+| `git show --check ba42271` | 通过，无空白错误 |
+| `git diff --check` | 通过，无空白错误 |
+| 2 份 Phase 1.1.5 文档扫描 | 未发现本机账户名、Windows 用户目录绝对路径、file URI 或 Unix home 路径 |
+| 6 份 Phase 1.1.5 日志扫描 | 未发现同类命中 |
+| 修复报告绝对路径 | 已替换为 `<repo-root>` |
+| before-probe 的 7 处路径 | 已替换；尾随空格已清理 |
+
+扫描范围：`docs/phase-1.1.5-fix-report.md`、`docs/phase-1.1.5-final-review.md`，以及 `logs/phase1.1.5-unit.txt`、`logs/phase1.1.5-simulated.txt`、`logs/phase1.1.5-all.txt`、`logs/phase1.1.5-repeat.txt`、`logs/phase1.1.5-before-probe.txt`、`logs/phase1.1.5-after-probe.txt`。
+
+扫描未命中任务书列出的本机账户名、Windows 用户目录绝对路径、file URI、Unix home 路径等模式。项目标识 `CaohaTanvirCh/chilia_fish_ability_extension` 不是本机账户名或路径，未计入命中。
+
+### 8.4 PUB-1 / LOG-1 关闭
+
+- **PUB-1（P2，交付卫生）：关闭。** 两个新增文件中的本机绝对路径已清除，2 份文档和 6 份日志扫描无命中。
+- **LOG-1（P3，日志格式）：关闭。** before-probe 的 TAP 尾随空格已清理，`git show --check ba42271` 通过。
+- 第 5 节保留的 PUB-1/LOG-1 是 `1b6069d` 时点的历史发现；其状态已由本节关闭记录取代。
+
+### 8.5 最终结论
+
+**PASS。**
+
+该 PASS 仅表示 **Phase 1.1.5 本轮交付物通过**：
+
+- 代码/测试：`assertTaskProjection` 的八字段与三类型约束、`dispatchQueued` 守卫位置、22 个独立反例、78/37/115 与 3×13 复验，均沿用第 1–3 节的审查结果；
+- 交付卫生：`ba42271` 后，2 份文档 + 6 份日志均处于脱敏状态，PUB-1/LOG-1 关闭。
+
+该 PASS **不代表整个仓库已经完成脱敏**。全仓库仍有既有 README、DEVELOPMENT、部署文档、脚本和旧日志中的本机路径（第 5 节 DOC-1）；这是独立的仓库级遗留问题，不是本轮未关闭项，也不改变本轮 PASS。
+
+本轮仍未运行真实 DSH 集成，不把 Fake/Simulated 结果称为真实 DSH 证据；未修改生产代码、测试、Store schema、ACP transport、状态机或其他历史报告；未进入 Phase 2。
