@@ -154,4 +154,4 @@
 - `package.json`（把 N05 测试加入 test:unit）
 - 文档与测试日志
 
-提交 SHA：待提交后回填。
+实现提交：`31139e874afa73fc3de3d82427e403b84cb0d031`（`fix: phase 1.1.3 n02 recovery flag and n05 fail-closed store`）。报告 SHA 回填提交见 `git log`。
