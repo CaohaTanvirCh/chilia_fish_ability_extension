@@ -1,10 +1,11 @@
-import {readFileSync,mkdirSync,appendFileSync} from 'node:fs';
+import {mkdirSync,appendFileSync} from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import {AcpTransport} from '../packages/acp-transport/index.mjs';
 import {DshAcpExecutor} from '../packages/dsh-acp/index.mjs';
 import {TaskStore} from '../packages/task-store/index.mjs';
-const config=JSON.parse(readFileSync(new URL('../config/windows.json',import.meta.url),'utf8'));
+import {loadWindowsConfig} from './windows-config.mjs';
+const config=loadWindowsConfig();
 const run=new Date().toISOString().replace(/[:.]/g,'-');
 const directory=path.join(config.cwd,'var','integration',run);
 mkdirSync(path.join(config.cwd,'logs'),{recursive:true});

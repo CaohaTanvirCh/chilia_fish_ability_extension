@@ -1,6 +1,7 @@
-import {readFileSync,mkdirSync,appendFileSync} from 'node:fs';
+import {mkdirSync,appendFileSync} from 'node:fs';
 import {AcpTransport} from '../packages/acp-transport/index.mjs';
-const config=JSON.parse(readFileSync(new URL('../config/windows.json',import.meta.url),'utf8'));
+import {loadWindowsConfig} from './windows-config.mjs';
+const config=loadWindowsConfig();
 mkdirSync(new URL('../logs/',import.meta.url),{recursive:true});
 const log=(type,data)=>{const line=JSON.stringify({time:new Date().toISOString(),type,data});console.log(line);appendFileSync(new URL('../logs/probe-session.jsonl',import.meta.url),line+'\n');};
 const transport=new AcpTransport({...config,onStderr:data=>log('stderr',data)});

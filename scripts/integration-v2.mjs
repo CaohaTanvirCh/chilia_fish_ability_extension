@@ -1,10 +1,11 @@
-import {readFileSync,mkdirSync,appendFileSync} from 'node:fs';
+import {mkdirSync,appendFileSync} from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import {AcpTransport} from '../packages/acp-transport/index.mjs';
 import {ExecutionStore} from '../packages/task-store-v2/index.mjs';
 import {DshAcpExecutor} from '../packages/dsh-acp-v2/index.mjs';
-const config=JSON.parse(readFileSync(new URL('../config/windows.json',import.meta.url),'utf8'));
+import {loadWindowsConfig} from './windows-config.mjs';
+const config=loadWindowsConfig();
 const run=new Date().toISOString().replace(/[:.]/g,'-'),dir=path.join(config.cwd,'var','real-v2',run),logPath=path.join(config.cwd,'logs',`real-v2-${run}.jsonl`);mkdirSync(path.dirname(logPath),{recursive:true});
 const log=(type,data)=>{const line=JSON.stringify({time:new Date().toISOString(),kind:'real-dsh',type,data});console.log(line);appendFileSync(logPath,line+'\n')};
 const transports=[];const factory=()=>{const x=new AcpTransport({...config,onStderr:s=>log('stderr',s)});transports.push(x);return x;};
