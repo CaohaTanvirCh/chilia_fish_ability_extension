@@ -17,10 +17,10 @@ function fixture(t, limits) {
 }
 function seed(store, status = 'running') {
   const execution = { executionId: 'e1', taskId: 't1', status, prompt: 'hello', submission: status === 'running' ? 'dispatch_intent' : 'not_started', bindingId: 'b1', result: '', resultIntegrity: 'partial', completionEvidence: null, diagnostics: [] };
-  return store.commit(store.snapshot().revision, { admission: true, tasks: [{ taskId: 't1', status, activeExecutionId: 'e1', latestExecutionId: 'e1', unresolvedExecutionIds: [] }], executions: [execution], bindings: [{ bindingId: 'b1', taskId: 't1', sessionId: 's1', availability: 'active' }], requests: [{ key: 'r1', taskId: 't1', executionId: 'e1', inputHash: 'hash' }], events: [{ type: 'execution.created', taskId: 't1', executionId: 'e1' }] });
+  return store.commit(store.snapshot().revision, { admission: true, tasks: [{ taskId: 't1', status, activeExecutionId: 'e1', latestExecutionId: 'e1', unresolvedExecutionIds: [], result: '', sessionId: 's1' }], executions: [execution], bindings: [{ bindingId: 'b1', taskId: 't1', sessionId: 's1', availability: 'active' }], requests: [{ key: 'r1', taskId: 't1', executionId: 'e1', inputHash: 'hash' }], events: [{ type: 'execution.created', taskId: 't1', executionId: 'e1' }] });
 }
 function finish(state, status = 'completed') {
-  return { tasks: [{ ...state.tasks[0], status, activeExecutionId: null }], executions: [{ ...state.executions[0], status, submission: 'response_observed', result: 'answer', resultIntegrity: status === 'completed' ? 'observed_complete' : 'partial', completionEvidence: { stopReason: status === 'completed' ? 'end_turn' : 'cancelled' } }], events: [{ type: `execution.${status}`, taskId: 't1', executionId: 'e1', data: { status } }] };
+  return { tasks: [{ ...state.tasks[0], status, activeExecutionId: null, result: 'answer' }], executions: [{ ...state.executions[0], status, submission: 'response_observed', result: 'answer', resultIntegrity: status === 'completed' ? 'observed_complete' : 'partial', completionEvidence: { stopReason: status === 'completed' ? 'end_turn' : 'cancelled' } }], bindings: [{ ...state.bindings[0], availability: 'closed' }], events: [{ type: `execution.${status}`, taskId: 't1', executionId: 'e1', data: { status } }] };
 }
 
 test('atomic terminal result/evidence/task/events persist together and snapshots are detached', t => {
@@ -53,6 +53,17 @@ test('invalid terminal receipts, revisions, and references leave disk and memory
   assert.deepEqual(store.snapshot(), before); assert.equal(readFileSync(file, 'utf8'), bytes);
 });
 
+test('semantic projection rejects inconsistent result, pointer, and enum snapshots', t => {
+  const f = fixture(t); const store = f.store().open(); const state = seed(store);
+  assert.throws(() => store.commit(state.revision, { tasks: [{ ...state.tasks[0], result: 'tampered' }] }), { code: 'VALIDATION' });
+  assert.throws(() => store.commit(state.revision, { tasks: [{ ...state.tasks[0], latestExecutionId: 'absent' }] }), { code: 'VALIDATION' });
+  assert.throws(() => store.commit(state.revision, { executions: [{ ...state.executions[0], executionId: 'e2', status: 'failed', submission: 'response_observed', result: 'x' }], tasks: [{ ...state.tasks[0], activeExecutionId: null, latestExecutionId: 'e1' }] }), { code: 'VALIDATION' });
+  assert.throws(() => store.commit(state.revision, { bindings: [{ ...state.bindings[0], availability: 'open' }] }), { code: 'VALIDATION' });
+  assert.throws(() => store.commit(state.revision, { executions: [{ ...state.executions[0], submission: 'invented' }] }), { code: 'VALIDATION' });
+  assert.throws(() => store.commit(state.revision, { tasks: [{ ...state.tasks[0], duplicateExecutionRisk: true, integrityAlerts: [{ code: 'LATE', acknowledgedAt: null }] }] }), { code: 'VALIDATION' });
+  assert.equal(store.snapshot().revision, state.revision);
+});
+
 test('terminal facts and ownership are immutable while diagnostics and cancellation timestamps may evolve', t => {
   const f = fixture(t); const store = f.store().open(); const running = seed(store); const done = store.commit(running.revision, finish(running));
   for (const patch of [{ status: 'unknown' }, { prompt: 'another' }, { result: 'other' }, { resultIntegrity: 'partial' }, { completionEvidence: { stopReason: 'cancelled' } }]) assert.throws(() => store.commit(done.revision, { executions: [{ ...done.executions[0], ...patch }] }), { code: 'IMMUTABLE_TERMINAL' });
@@ -65,8 +76,8 @@ test('terminal facts and ownership are immutable while diagnostics and cancellat
 test('restart marks possibly submitted executions unknown, preserves queued not_started and terminal receipts', t => {
   const f = fixture(t); const store = f.store().open(); const state = seed(store);
   store.commit(state.revision, {
-    tasks: [{ taskId: 'queued', status: 'queued', activeExecutionId: 'eq' }, { taskId: 'intent', status: 'queued', activeExecutionId: 'ei' }, { taskId: 'done', status: 'cancelled' }],
-    executions: [{ executionId: 'eq', taskId: 'queued', status: 'queued', submission: 'not_started' }, { executionId: 'ei', taskId: 'intent', status: 'queued', submission: 'dispatch_intent' }, { executionId: 'ed', taskId: 'done', status: 'cancelled', completionEvidence: { stopReason: 'local_not_submitted' }, result: '' }],
+    tasks: [{ taskId: 'queued', status: 'queued', activeExecutionId: 'eq', latestExecutionId: 'eq', unresolvedExecutionIds: [], result: '', sessionId: null }, { taskId: 'intent', status: 'queued', activeExecutionId: 'ei', latestExecutionId: 'ei', unresolvedExecutionIds: [], result: '', sessionId: null }, { taskId: 'done', status: 'cancelled', latestExecutionId: 'ed', unresolvedExecutionIds: [], result: '', sessionId: null }],
+    executions: [{ executionId: 'eq', taskId: 'queued', status: 'queued', submission: 'not_started', result: '' }, { executionId: 'ei', taskId: 'intent', status: 'queued', submission: 'dispatch_intent', result: '' }, { executionId: 'ed', taskId: 'done', status: 'cancelled', completionEvidence: { stopReason: 'local_not_submitted' }, result: '' }],
   });
   store.close(); store.open(); const recovered = store.snapshot();
   assert.deepEqual(recovered.executions.map(e => e.status), ['unknown', 'queued', 'unknown', 'cancelled']);
@@ -97,7 +108,8 @@ test('admission reserves terminal byte/event capacity and hard caps reject atomi
   const f = fixture(t, { maxBytes: 8192, reserveBytes: 2048, maxEvents: 3, reserveEvents: 2, maxTasks: 1, maxExecutions: 1 }); const store = f.store().open(); const state = seed(store);
   assert.throws(() => store.commit(state.revision, { admission: true, events: [{ type: 'admit', taskId: 't1' }] }), { code: 'CAPACITY' });
   assert.throws(() => store.commit(state.revision, { tasks: [{ taskId: 'extra' }] }), { code: 'CAPACITY' });
-  assert.throws(() => store.commit(state.revision, { admission: true, executions: [{ ...state.executions[0], result: '中'.repeat(2100) }] }), { code: 'CAPACITY' });
+  const large = '中'.repeat(2100);
+  assert.throws(() => store.commit(state.revision, { admission: true, tasks: [{ ...state.tasks[0], result: large }], executions: [{ ...state.executions[0], result: large }] }), { code: 'CAPACITY' });
   const done = store.commit(state.revision, finish(state)); assert.equal(done.executions[0].status, 'completed');
   assert.throws(() => store.commit(done.revision, { tasks: [{ ...done.tasks[0], extra: '中'.repeat(3000) }] }), { code: 'CAPACITY' }); assert.equal(store.snapshot().revision, done.revision);
 });

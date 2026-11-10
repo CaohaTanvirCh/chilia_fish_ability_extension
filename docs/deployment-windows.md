@@ -24,6 +24,8 @@ npm start
 
 数据目录相对配置 cwd 解析；日志位于项目 logs。DSH 继续使用其官方 acp profile、Home 与凭据管理。本项目不读取 DSH 数据库，不提取 API key，不复制 Desktop 私有状态。
 
+可选 `executorModule`（相对 cwd 的本地 ESM 路径）用于替换 Hub 的执行器，模块须导出 `createExecutor({config})`。默认不设置，使用内置 `DshAcpExecutor`；该入口也被 Hub 故障注入测试使用。只应指向本机可信代码。
+
 ## 使用
 
 Hub 就绪后，在 stdin 每行输入一个 JSON：
@@ -41,9 +43,10 @@ createTask 返回 taskId。查询/取消/关闭把该 ID 放入 args 数组；�
 {"id":"resume-1","method":"resumeTask","args":["实际 taskId"]}
 {"id":"next-1","method":"startExecution","args":["实际 taskId",{"prompt":"继续本工作任务","requestKey":"next-unique-request"}]}
 {"id":"events-1","method":"getEvents","args":[0,100]}
+{"id":"ack-1","method":"acknowledgeIntegrityAlerts","args":["实际 taskId",{"acknowledgedBy":"本机操作者","note":"已检查迟到通知"}]}
 ```
 
-stdout 混合事件和请求结果，按 type/id 区分；使用 Node 子进程时直接 JSON.stringify 写入 stdin，避免 shell 拼接。原始日志与 JSON 不应直接发到 QQ，Phase 2 入口需要独立整理面向用户的文本。
+stdout 混合事件和请求结果，按 type/id 区分；使用 Node 子进程时直接 JSON.stringify 写入 stdin，避免 shell 拼接。原始日志与 JSON 不应直接发到 QQ，Phase 2 入口需要独立整理面向用户的文本。`cancelExecution` 的 result 是 `{execution,cancelRequested,cancelConfirmed}`；只有 `cancelConfirmed=true` 才代表终止已确认。`cancelTask` 返回 Task，调用方仍需检查活动 Execution 的状态。`acknowledgeIntegrityAlerts` 只是人工确认，不代表远端结果完整，也不会消除 `duplicateExecutionRisk`。
 
 ## 停用、替换与恢复
 

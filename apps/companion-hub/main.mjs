@@ -1,24 +1,25 @@
 import {readFileSync} from 'node:fs';
 import path from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {TextDecoder} from 'node:util';
 import {AcpTransport} from '../../packages/acp-transport/index.mjs';
 import {DshAcpExecutor} from '../../packages/dsh-acp-v2/index.mjs';
 import {ExecutionStore} from '../../packages/task-store-v2/index.mjs';
+import {createStopController} from './lifecycle.mjs';
 
 const MAX_LINE_BYTES=1024*1024, MAX_INFLIGHT=16, MAX_OUTPUT_BYTES=4*1024*1024;
 const config=JSON.parse(readFileSync(path.resolve(process.argv[2]??'config/windows.json'),'utf8'));
-let executor, startup, stopPromise, stopping=false, outputFailed=false, finishInput;
+let executor, startup, stopping=false, outputFailed=false, finishInput;
 const pending=new Set();
-function stop(){
- stopping=true;
- process.stdin.pause();
- finishInput?.();
- return stopPromise??=Promise.resolve().then(async()=>{
+const shutdown=createStopController({
+ onStop:()=>{stopping=true;process.stdin.pause();finishInput?.();},
+ cleanup:async()=>{
   const cleanup=executor?.stop();
-   try{await startup;}catch{}
+  try{await startup;}catch{}
   await cleanup;
- });
-}
+ },
+});
+function stop(){return shutdown.stop();}
 function failOutput(){
  if(outputFailed)return;
  outputFailed=true;
@@ -35,7 +36,7 @@ function output(value){
 function errorOutput(id,error){output({id,error:{message:error.message,code:error.code??'ERROR'}});}
 process.stdout.on('error',failOutput);
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>{void stop().catch(error=>process.stderr.write(`${error.message}\n`));});
-const allowed=new Set(['initialize','start','healthCheck','createTask','getTask','listTasks','startExecution','dispatchQueued','getExecution','listExecutions','resumeTask','reconcileTask','cancelTask','cancelExecution','closeSession','closeTask','getEvents']);
+const allowed=new Set(['initialize','start','healthCheck','createTask','getTask','listTasks','startExecution','dispatchQueued','getExecution','listExecutions','resumeTask','reconcileTask','cancelTask','cancelExecution','acknowledgeIntegrityAlerts','closeSession','closeTask','getEvents']);
 function commandLine(bytes){
  let command;
  try{
@@ -83,16 +84,25 @@ function readCommands(){
   process.stdin.once('error',error=>{process.stderr.write(`Hub input failed: ${error.message}\n`);finishInput();});
  });
 }
+async function createExecutor(context){
+ if(context.executorModule){
+  const module=await import(pathToFileURL(path.resolve(context.cwd,context.executorModule)).href);
+  const factory=module.createExecutor??module.default;
+  if(typeof factory!=='function')throw new Error('executorModule must export createExecutor');
+  return factory({config:context});
+ }
+ return new DshAcpExecutor({
+  transportFactory:()=>new AcpTransport({...context,onStderr:text=>process.stderr.write(text)}),
+  store:new ExecutionStore(path.resolve(context.cwd,context.dataDirectory)),
+  taskTimeoutMs:context.taskTimeoutMs,
+  sessionOperationTimeoutMs:context.sessionOperationTimeoutMs??30000,
+  cancelTimeoutMs:context.cancelTimeoutMs??5000,
+ });
+}
 try{
  if(!config.enabled){output({type:'health',healthy:false,enabled:false});}
  else if(!stopping){
-  executor=new DshAcpExecutor({
-   transportFactory:()=>new AcpTransport({...config,onStderr:text=>process.stderr.write(text)}),
-   store:new ExecutionStore(path.resolve(config.cwd,config.dataDirectory)),
-   taskTimeoutMs:config.taskTimeoutMs,
-   sessionOperationTimeoutMs:config.sessionOperationTimeoutMs??30000,
-   cancelTimeoutMs:config.cancelTimeoutMs??5000,
-  });
+  executor=await createExecutor(config);
   startup=(async()=>{await executor.initialize();if(!stopping)await executor.start();})();
   await startup;
   if(!stopping){
@@ -103,6 +113,10 @@ try{
  }
 }catch(error){process.stderr.write(`${error.stack??error}\n`);process.exitCode=1;}
 finally{
- try{await stop();}catch(error){process.stderr.write(`${error.stack??error}\n`);process.exitCode=1;}
+ // A stop requested by a command can still be in flight here. If it fails,
+ // retry once after the lifecycle controller clears the rejected attempt.
+ try{await stop();}catch(first){
+  try{await stop();}catch(second){process.stderr.write(`${second.stack??second}\n`);process.exitCode=1;}
+ }
  await Promise.allSettled([...pending]);
 }

@@ -33,7 +33,9 @@ Task 一次最多一个活动 Execution；可以有多个历史 Execution。执�
 3. `closeSession` 只释放上下文；不改变既有 Execution 结果。活动执行必须先取消/结算，关闭失败不标成功。
 4. `closeTask` 是取消活动执行并尝试关闭 Session，再标生命周期 closed；不清除 unknown、partial 输出或风险。失败保留诊断，允许重试；不能再启动新轮。
 
-投影优先级：任何未解决 unknown/interrupted 或完整性警报 → Task.status=unknown；否则活动 Execution 的 queued/running → 对应状态；否则 latestExecution.status。activeExecutionId 单独可查询，所以有已承认旧unknown时新执行running，Task总体仍unknown，不掩盖历史风险。unresolvedExecutionIds、duplicateExecutionRisk 和 latestExecutionId 始终返回。未解决记录本阶段不提供“人工改成功”接口，保留可查询性。
+投影优先级：任何未解决 unknown/interrupted 或**未确认**完整性警报 → Task.status=unknown；否则活动 Execution 的 queued/running → 对应状态；否则 latestExecution.status。已确认警报保留原始记录和确认人/时间，不删除、不证明结果完整；`duplicateExecutionRisk` 继续为 true，且新执行不复用受影响 Session。activeExecutionId 单独可查询，所以有已承认旧unknown时新执行running，Task总体可回落到执行状态，但不掩盖历史风险。unresolvedExecutionIds、duplicateExecutionRisk 和 latestExecutionId 始终返回。未解决记录本阶段不提供“人工改成功”接口；完整性警报提供显式人工确认入口。
+
+终态Execution的Binding仍为active时，恢复将Binding标为unknown并记录诊断，不伪造closed；恢复入口为resumeTask/closeSession。
 
 ## A12：容量与长任务存储
 

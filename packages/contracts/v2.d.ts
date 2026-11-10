@@ -118,7 +118,8 @@ export interface StoreHealth {
  * Owns state-v2.json and store-v2.lock. open() refuses a legacy-only directory with
  * MIGRATION_REQUIRED; it never fabricates execution receipts. An incomplete migration marker
  * or destination migration lock causes MIGRATION_INCOMPLETE. Running or dispatch_intent
- * executions recover to unknown; queued/not_started executions remain queued.
+ * executions recover to unknown; queued/not_started executions remain queued. A terminal
+ * execution whose binding is still active is marked unknown with recoveryRequired, never closed.
  * Snapshot and commit return detached JSON copies. Revision starts at 0; every successful
  * commit advances it once. Throws REVISION_CONFLICT, CAPACITY, VALIDATION,
  * IMMUTABLE_TERMINAL, STORE_LOCKED, STORE_CLOSED, STORE_CORRUPT or native I/O errors.
@@ -136,6 +137,21 @@ export interface ExecutionStore {
 }
 export interface CreateTaskInput { cwd: string; prompt: string; requestKey: string; taskId?: string; defer?: boolean; }
 export interface StartExecutionInput { prompt: string; requestKey: string; acknowledgeUnknownExecutionIds?: string[]; }
+/** A notification-integrity risk. Acknowledgement preserves the original alert. */
+export interface IntegrityAlert {
+  executionId: string;
+  code: string;
+  time?: string;
+  acknowledgedAt?: string;
+  acknowledgedBy?: string;
+  note?: string;
+}
+/** `cancelRequested` means a request was recorded; only `cancelConfirmed` means termination was observed. */
+export interface CancelExecutionResult {
+  execution: Execution;
+  cancelRequested: boolean;
+  cancelConfirmed: boolean;
+}
 export interface TaskExecutor {
   initialize(): Promise<void>; start(): Promise<void>; stop(): Promise<void>;
   healthCheck(): Promise<{ healthy: boolean; [field: string]: unknown }>;
@@ -144,7 +160,8 @@ export interface TaskExecutor {
   startExecution(taskId: string, input: StartExecutionInput): Promise<Execution>;
   dispatchQueued(executionId: string): Promise<Execution>;
   getExecution(executionId: string): Promise<Execution | null>; listExecutions(taskId?: string): Promise<Execution[]>;
-  cancelExecution(executionId: string): Promise<Execution>; cancelTask(taskId: string): Promise<Task>;
+  cancelExecution(executionId: string): Promise<CancelExecutionResult>; cancelTask(taskId: string): Promise<Task>;
+  acknowledgeIntegrityAlerts(taskId: string, input: {acknowledgedBy: string; note?: string}): Promise<Task>;
   closeSession(taskId: string): Promise<Task>; closeTask(taskId: string): Promise<Task>;
   resumeTask(taskId: string, options?: {restoreContext?: boolean}): Promise<Task>;
   reconcileTask(taskId: string, options?: {restoreContext?: boolean}): Promise<Task>;

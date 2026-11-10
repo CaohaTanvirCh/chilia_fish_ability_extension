@@ -25,10 +25,12 @@ export class DshAcpExecutor {
  task(id){const t=this.state().tasks.find(t=>t.taskId===id);if(!t)throw fault('TASK_NOT_FOUND',id);return t;}
  execution(id){const e=this.state().executions.find(e=>e.executionId===id);if(!e)throw fault('EXECUTION_NOT_FOUND',id);return e;}
  binding(id){return this.state().bindings.find(b=>b.bindingId===id);}
- project(task,executions){
+ project(task,executions,bindings=this.state().bindings){
   const es=executions.filter(e=>e.taskId===task.taskId),latest=es.find(e=>e.executionId===task.latestExecutionId),a=es.find(e=>active.has(e.status));
   const unresolved=es.filter(e=>uncertain.has(e.status)).map(e=>e.executionId);
-  return {...task,activeExecutionId:a?.executionId??null,unresolvedExecutionIds:unresolved,duplicateExecutionRisk:unresolved.length>0||es.some(e=>e.duplicateExecutionRisk),status:unresolved.length||task.integrityAlerts?.length?'unknown':a?.status??latest?.status??'queued',result:latest?.result??'',sessionId:latest?.bindingId?this.binding(latest.bindingId)?.sessionId??null:null,updatedAt:now(),revision:(task.revision??0)+1};
+  const openAlerts=(task.integrityAlerts??[]).filter(alert=>!alert?.acknowledgedAt);
+  const latestBinding=latest?.bindingId?bindings.find(b=>b.bindingId===latest.bindingId):null;
+  return {...task,activeExecutionId:a?.executionId??null,unresolvedExecutionIds:unresolved,duplicateExecutionRisk:unresolved.length>0||openAlerts.length>0||(task.integrityAlerts?.length??0)>0||es.some(e=>e.duplicateExecutionRisk),status:unresolved.length||openAlerts.length?'unknown':a?.status??latest?.status??'queued',result:latest?.result??'',sessionId:latestBinding?.sessionId??null,updatedAt:now(),revision:(task.revision??0)+1};
  }
  commit(changes){
   if(this.storageFault)throw fault('STORAGE_FAULT',this.storageFault.message);
@@ -36,13 +38,13 @@ export class DshAcpExecutor {
   catch(error){if(!['REVISION_CONFLICT','CAPACITY','INVALID_TRANSITION','VALIDATION_ERROR','STORE_CAPACITY'].includes(error.code)){this.storageFault=error;for(const op of this.operations.values()){op.reject(error);void op.transport?.stop().catch(()=>{});}}throw error;}
  }
  changeExecution(id,patch,type='execution.updated',extra={}){
-  const before=this.state(),old=this.execution(id),e={...old,...patch,updatedAt:now()};const all=before.executions.map(x=>x.executionId===id?e:x);const t=this.project(this.task(e.taskId),all);
+  const before=this.state(),old=this.execution(id),e={...old,...patch,updatedAt:now()};const all=before.executions.map(x=>x.executionId===id?e:x),incoming=extra.bindings??[],bindings=[...before.bindings.filter(b=>!incoming.some(n=>n.bindingId===b.bindingId)),...incoming];const t=this.project(this.task(e.taskId),all,bindings);
   this.commit({...extra,executions:[e],tasks:[t],events:[{type,taskId:e.taskId,executionId:id,data:{status:e.status,submission:e.submission,resultBytes:Buffer.byteLength(e.result??'')}}]});return e;
  }
  async gate(id,fn){const prior=this.gates.get(id)??Promise.resolve();const run=prior.catch(()=>{}).then(fn);this.gates.set(id,run);try{return await run}finally{if(this.gates.get(id)===run)this.gates.delete(id)}}
  async createTask(input){
-  await this.start();text(input.requestKey,'requestKey');text(input.prompt,'prompt');const cwd=normalizeWorkspace(input.cwd);const inputHash=hash({kind:'create',cwd,prompt:input.prompt,taskId:input.taskId??null});
-  const previous=this.state().requests.find(r=>r.key===input.requestKey);if(previous){if(previous.inputHash!==inputHash)throw fault('IDEMPOTENCY_CONFLICT','requestKey reused with different input');return this.task(previous.taskId);}
+  await this.start();text(input.requestKey,'requestKey');text(input.prompt,'prompt');const cwd=normalizeWorkspace(input.cwd);const inputHash=hash({kind:'create',cwd,prompt:input.prompt,taskId:input.taskId??null,defer:input.defer===true}),legacyHash=hash({kind:'create',cwd,prompt:input.prompt,taskId:input.taskId??null});
+  const previous=this.state().requests.find(r=>r.key===input.requestKey);if(previous){if(previous.inputHash===inputHash||previous.inputHash===legacyHash)return this.task(previous.taskId);throw fault('IDEMPOTENCY_CONFLICT','requestKey reused with different input');}
   if(this.operations.size>=this.maxConcurrent)throw fault('BUSY','Execution concurrency limit');
   const taskId=input.taskId??randomUUID();if(this.state().tasks.some(t=>t.taskId===taskId))throw fault('TASK_EXISTS',taskId);
   const e=this.newExecution(taskId,input.prompt,input.requestKey),t={taskId,cwd,objective:input.prompt,lifecycle:'open',status:'queued',latestExecutionId:e.executionId,activeExecutionId:e.executionId,unresolvedExecutionIds:[],duplicateExecutionRisk:false,integrityAlerts:[],createdAt:now(),updatedAt:now(),revision:1,result:'',sessionId:null};
@@ -58,24 +60,26 @@ export class DshAcpExecutor {
   const t=this.task(taskId);if(t.lifecycle!=='open')throw fault('TASK_CLOSED','Task closed');if(this.cancelGates.has(taskId)||this.gatesClosing?.has(taskId)||[...this.operations.values()].some(o=>o.taskId===taskId))throw fault('BUSY','Previous execution/cleanup/cancellation not settled');
   if(this.operations.size>=this.maxConcurrent)throw fault('BUSY','Execution concurrency limit');
   const unknown=t.unresolvedExecutionIds??[];if(unknown.some(id=>!input.acknowledgeUnknownExecutionIds?.includes(id)))throw fault('UNKNOWN_EXECUTION','Explicitly acknowledge every unresolved execution; old Session will not be reused');
-  if(t.integrityAlerts?.length)throw fault('INTEGRITY_ALERT','Task has unresolved notification integrity alerts');
+  const openAlerts=(t.integrityAlerts??[]).filter(alert=>!alert?.acknowledgedAt);
+  if(openAlerts.length)throw fault('INTEGRITY_ALERT','Task has unresolved notification integrity alerts');
+  const hasIntegrity=(t.integrityAlerts?.length??0)>0;
   const latest=t.latestExecutionId?this.execution(t.latestExecutionId):null;
   if(latest&&active.has(latest.status))throw fault('QUEUED_EXECUTION','Use dispatchQueued for the existing unsent execution');
-  const e=this.newExecution(taskId,input.prompt,input.requestKey);e.duplicateExecutionRisk=unknown.length>0;
-  if(!unknown.length&&latest?.bindingId){const b=this.binding(latest.bindingId);if(b?.availability!=='closed')throw fault('SESSION_UNSETTLED','Previous Session cleanup not confirmed');e.bindingId=latest.bindingId;}
+  const e=this.newExecution(taskId,input.prompt,input.requestKey);e.duplicateExecutionRisk=unknown.length>0||hasIntegrity;
+  if(!unknown.length&&!hasIntegrity&&latest?.bindingId){const b=this.binding(latest.bindingId);if(b?.availability!=='closed')throw fault('SESSION_UNSETTLED','Previous Session cleanup not confirmed; call reconcileTask or closeSession before starting a new execution');e.bindingId=latest.bindingId;}
   const next=this.project({...t,latestExecutionId:e.executionId},[...this.state().executions,e]);
   this.commit({admission:true,tasks:[next],executions:[e],requests:[{key:input.requestKey,inputHash,taskId,executionId:e.executionId}],events:[{type:'execution.created',taskId,executionId:e.executionId}]});this.launch(e.executionId);return e;
  });}
  async dispatchQueued(executionId){await this.start();const e=this.execution(executionId);return this.gate(e.taskId,()=>{if(this.operations.size>=this.maxConcurrent)throw fault('BUSY','Execution concurrency limit');if(e.status!=='queued'||e.submission!=='not_started')throw fault('NOT_QUEUED','Not safely unsent');if(this.task(e.taskId).lifecycle!=='open')throw fault('TASK_CLOSED','Closed');if([...this.operations.values()].some(o=>o.taskId===e.taskId))throw fault('BUSY','Task busy');this.launch(executionId);return e;});}
  launch(executionId){
-  const e=this.execution(executionId);const op={executionId,taskId:e.taskId,transport:this.transportFactory(),phase:'setup',pending:'',bytes:0,quarantine:[],generation:randomUUID(),cancelPromise:null};
+  const e=this.execution(executionId);const op={executionId,taskId:e.taskId,transport:this.transportFactory(),phase:'setup',pending:'',bytes:0,quarantine:[],generation:randomUUID(),cancelPromise:null,bindingId:null,sessionClosed:false};
   op.abort=new Promise((_,reject)=>op.reject=reject);op.abort.catch(()=>{});op.request=(m,p,ms)=>Promise.race([op.transport.request(m,p,ms),op.abort]);this.operations.set(executionId,op);
   op.flushCount=0;
   op.done=this.run(op).catch(error=>{this.storageFault??=error;}).finally(()=>{clearTimeout(op.flushTimer);clearTimeout(op.deadlineTimer);if(!op.cleanupFailed)this.operations.delete(executionId);});
  }
  flush(op){clearTimeout(op.flushTimer);op.flushTimer=null;if(!op.pending)return;const e=this.execution(op.executionId),pending=op.pending;this.changeExecution(e.executionId,{result:e.result+pending,resultIntegrity:op.bad?'uncertain':e.resultIntegrity},'execution.output');op.pending='';op.flushCount++;}
  quarantine(op,reason,params){if(op.quarantine.length>=32)return;op.quarantine.push({code:reason,time:now(),detail:Buffer.from(JSON.stringify(params)).subarray(0,700).toString('utf8')});op.bad=true;
-  if(op.committed&&!this.storageFault){const t=this.task(op.taskId);if(!t.integrityAlerts.some(a=>a.executionId===op.executionId))this.commit({tasks:[{...t,status:'unknown',integrityAlerts:[...t.integrityAlerts,{executionId:op.executionId,code:reason}],updatedAt:now()}],events:[{type:'notification.quarantined',taskId:op.taskId,executionId:op.executionId,data:{reason}}]});}
+  if(op.committed&&!this.storageFault){const t=this.task(op.taskId);if(!(t.integrityAlerts??[]).some(a=>a.executionId===op.executionId))this.commit({tasks:[{...t,status:'unknown',duplicateExecutionRisk:true,integrityAlerts:[...(t.integrityAlerts??[]),{executionId:op.executionId,code:reason,time:now()}],updatedAt:now()}],events:[{type:'notification.quarantined',taskId:op.taskId,executionId:op.executionId,data:{reason}}]});}
  }
  receive(op,params){
   const u=params.update;
@@ -105,7 +109,8 @@ export class DshAcpExecutor {
    this.flush(op);this.hooks.beforeTerminalCommit?.({execution:this.execution(e.executionId),response});
    e=this.execution(e.executionId);const status=op.bad?'unknown':response.stopReason==='end_turn'?'completed':response.stopReason==='cancelled'?'cancelled':'failed';
    const evidence=['completed','cancelled'].includes(status)?{stopReason:response.stopReason,sessionId:op.sessionId,generation:op.generation,executionId:e.executionId,observedAt:now()}:null;
-   this.changeExecution(e.executionId,{status,submission:'response_observed',resultIntegrity:status==='completed'?'observed_complete':op.bad?'uncertain':e.resultIntegrity,completionEvidence:evidence,cancel:{...e.cancel,confirmedAt:status==='cancelled'?now():e.cancel.confirmedAt},diagnostics:diagnostics([...e.diagnostics,...op.quarantine]),finishedAt:now()},'execution.settled');op.committed=true;
+   const terminalDiagnostics=status==='failed'?[...op.quarantine,{code:'ACP_STOP_REASON',stopReason:String(response.stopReason),time:now()}]:op.quarantine;
+   this.changeExecution(e.executionId,{status,submission:'response_observed',resultIntegrity:status==='completed'?'observed_complete':op.bad?'uncertain':e.resultIntegrity,completionEvidence:evidence,cancel:{...e.cancel,confirmedAt:status==='cancelled'?now():e.cancel.confirmedAt},diagnostics:diagnostics([...e.diagnostics,...terminalDiagnostics]),finishedAt:now()},'execution.settled');op.committed=true;
    this.hooks.afterTerminalCommit?.(this.execution(e.executionId));
   }catch(error){
    op.phase='settling';clearTimeout(op.deadlineTimer);
@@ -114,13 +119,15 @@ export class DshAcpExecutor {
    op.phase='closed';clearTimeout(op.flushTimer);
    let closed=false;
    try{if(op.sessionId)await op.transport.request('session/close',{sessionId:op.sessionId},this.sessionOperationTimeoutMs);closed=true;}catch{}
+   op.sessionClosed=closed;op.bindingId=binding?.bindingId??null;
    try{await op.transport.stop();op.cleanupFailed=false;}catch(error){op.cleanupFailed=true;op.cleanupError=error;}
-   if(binding&&!this.storageFault){try{const current=this.binding(binding.bindingId);this.commit({bindings:[{...current,availability:closed&&!op.cleanupFailed?'closed':'unknown'}],events:[{type:'session.cleanup',taskId:op.taskId,executionId:op.executionId,data:{closed:closed&&!op.cleanupFailed}}]});}catch(error){this.storageFault??=error;}}
+   if(binding&&!this.storageFault){try{const current=this.binding(binding.bindingId),settled=closed&&!op.cleanupFailed;this.commit({bindings:[{...current,availability:settled?'closed':'unknown',recoveryRequired:!settled}],events:[{type:'session.cleanup',taskId:op.taskId,executionId:op.executionId,data:{closed:settled}}]});}catch(error){this.storageFault??=error;}}
   }
  }
+ cancelResult(executionId){const e=this.execution(executionId);return {execution:e,cancelRequested:Boolean(e.cancel?.requestedAt),cancelConfirmed:e.status==='cancelled'&&['cancelled','local_not_submitted'].includes(e.completionEvidence?.stopReason)};}
  async cancelExecution(executionId){
   await this.initialize();const e=this.execution(executionId),op=this.operations.get(executionId);
-  if(!op){if(e.status==='queued'&&e.submission==='not_started'){this.changeExecution(executionId,{status:'cancelled',cancel:{...e.cancel,requestedAt:now(),confirmedAt:now()},completionEvidence:{stopReason:'local_not_submitted',observedAt:now()}},'execution.cancelled');}return this.execution(executionId);}
+  if(!op){if(e.status==='queued'&&e.submission==='not_started'){this.changeExecution(executionId,{status:'cancelled',cancel:{...e.cancel,requestedAt:now(),confirmedAt:now()},completionEvidence:{stopReason:'local_not_submitted',observedAt:now()}},'execution.cancelled');}return this.cancelResult(executionId);}
   if(op.cancelPromise)return op.cancelPromise;
   this.cancelGates.set(e.taskId,executionId);
   op.cancelPromise=(async()=>{
@@ -129,7 +136,7 @@ export class DshAcpExecutor {
     if(op.phase==='prompt'){await bounded(op.transport.notify('session/cancel',{sessionId:op.sessionId}),this.cancelTimeoutMs);current=this.execution(executionId);this.changeExecution(executionId,{cancel:{...current.cancel,sentAt:now()}},'execution.cancel_sent');}
     await bounded(op.done,this.cancelTimeoutMs+this.sessionOperationTimeoutMs);
    }catch(error){op.reject(fault('CANCEL_UNCONFIRMED','Cancellation not confirmed'));try{await op.transport.stop()}catch{};await bounded(op.done,this.sessionOperationTimeoutMs).catch(()=>{});}
-   return this.execution(executionId);
+   return this.cancelResult(executionId);
   })().finally(()=>{this.cancellations.delete(op.cancelPromise);if(this.cancelGates.get(e.taskId)===executionId)this.cancelGates.delete(e.taskId)});this.cancellations.add(op.cancelPromise);return op.cancelPromise;
  }
  async cancelTask(taskId){await this.initialize();const t=this.task(taskId);if(t.activeExecutionId)await this.cancelExecution(t.activeExecutionId);return this.task(taskId);}
@@ -145,12 +152,23 @@ export class DshAcpExecutor {
   finally{await transport.stop();this.contextTransports.delete(transport);}
   if(available&&b.availability!=='closed')this.commit({bindings:[{...b,availability:'closed'}],events:[{type:'session.reconciled',taskId,data:{available:true}}]});return this.task(taskId);
  });}
- async closeSession(taskId){await this.initialize();return this.gate(taskId,async()=>{await this.cancelTask(taskId);const ops=[...this.operations.values()].filter(o=>o.taskId===taskId);await Promise.all(ops.map(o=>o.done));if(ops.some(o=>o.cleanupFailed))throw fault('CLEANUP_FAILED','Session process cleanup not confirmed');const t=this.task(taskId),e=t.latestExecutionId?this.execution(t.latestExecutionId):null,b=e?.bindingId?this.binding(e.bindingId):null;if(b&&b.availability!=='closed'){
+ async retryCleanup(op){
+  try{await op.transport.stop();}
+  catch(error){op.cleanupFailed=true;op.cleanupError=error;return false;}
+  op.cleanupFailed=false;
+  if(op.bindingId&&!this.storageFault){const b=this.binding(op.bindingId);if(b)this.commit({bindings:[{...b,availability:op.sessionClosed?'closed':'unknown',recoveryRequired:!op.sessionClosed}],events:[{type:'session.cleanup_retry',taskId:op.taskId,executionId:op.executionId,data:{closed:op.sessionClosed}}]});}
+  this.operations.delete(op.executionId);return true;
+ }
+ async closeSession(taskId){await this.initialize();return this.gate(taskId,async()=>{await this.cancelTask(taskId);const ops=[...this.operations.values()].filter(o=>o.taskId===taskId);await Promise.all(ops.map(o=>o.done));for(const op of ops.filter(o=>o.cleanupFailed)){if(!(await this.retryCleanup(op)))throw fault('CLEANUP_FAILED','Session process cleanup not confirmed; retry failed with: '+String(op.cleanupError?.message??op.cleanupError));}if(ops.some(o=>o.cleanupFailed))throw fault('CLEANUP_FAILED','Session process cleanup not confirmed');const t=this.task(taskId),e=t.latestExecutionId?this.execution(t.latestExecutionId):null,b=e?.bindingId?this.binding(e.bindingId):null;if(b&&b.availability!=='closed'){
  if(b.runtimeId!==this.runtimeId)throw fault('RUNTIME_MISMATCH','Session runtime differs');
  const transport=this.transportFactory();this.contextTransports.add(transport);let closed=false;
  try{await transport.start();await transport.request('session/resume',{sessionId:b.sessionId,cwd:b.cwd,mcpServers:[]},this.sessionOperationTimeoutMs);await transport.request('session/close',{sessionId:b.sessionId},this.sessionOperationTimeoutMs);closed=true;}finally{await transport.stop();this.contextTransports.delete(transport);}
- if(closed)this.commit({bindings:[{...b,availability:'closed'}],events:[{type:'session.closed',taskId,data:{confirmed:true}}]});
+ if(closed)this.commit({bindings:[{...b,availability:'closed',recoveryRequired:false}],events:[{type:'session.closed',taskId,data:{confirmed:true}}]});
  }return this.task(taskId);});}
+ async acknowledgeIntegrityAlerts(taskId,{acknowledgedBy,note=''}={}){
+  await this.initialize();text(acknowledgedBy,'acknowledgedBy');if(typeof note!=='string')throw fault('INVALID_INPUT','note must be text');
+  return this.gate(taskId,async()=>{const t=this.task(taskId),alerts=t.integrityAlerts??[],open=alerts.filter(alert=>!alert.acknowledgedAt);if(!open.length)return t;const at=now(),actor=acknowledgedBy,text=note.slice(0,512);const updated=alerts.map(alert=>alert.acknowledgedAt?alert:{...alert,acknowledgedAt:at,acknowledgedBy:actor,note:text});const next=this.project({...t,integrityAlerts:updated},this.state().executions);this.commit({tasks:[next],events:[{type:'integrity.acknowledged',taskId,data:{count:open.length}}]});return this.task(taskId);});
+ }
  async closeTask(taskId){await this.initialize();this.gatesClosing??=new Set();this.gatesClosing.add(taskId);const t=this.task(taskId);if(t.lifecycle!=='closed')this.commit({tasks:[{...t,lifecycle:'closed',updatedAt:now()}],events:[{type:'task.close_requested',taskId}]});try{await this.closeSession(taskId);return this.task(taskId);}finally{this.gatesClosing.delete(taskId)}}
  async getTask(id){await this.initialize();return this.state().tasks.find(t=>t.taskId===id)??null;}
  async listTasks(){await this.initialize();return this.state().tasks;}
@@ -162,7 +180,7 @@ export class DshAcpExecutor {
  async healthCheck(){return {healthy:this.initialized&&!this.stopping&&!this.storageFault,store:this.store.healthCheck(),storageFault:this.storageFault?.message??null,activeExecutions:this.operations.size,cleanupFailures:[...this.operations.values()].filter(o=>o.cleanupFailed).map(o=>o.executionId)};}
  async stop(){
   this.stopping=true;if(this.stopPromise)return this.stopPromise;
-  const run=(async()=>{const ops=[...this.operations.values()];for(const op of ops)op.reject(fault('STOPPED','Executor stopped'));const results=await Promise.allSettled([...ops.map(o=>o.transport),...this.contextTransports].map(t=>t.stop()));await Promise.allSettled(ops.map(o=>o.done));await Promise.allSettled([...this.cancellations]);const failed=results.some(r=>r.status==='rejected');if(failed){for(const op of ops)if(op.cleanupFailed)await op.transport.stop();}for(const transport of this.contextTransports)await transport.stop();await Promise.allSettled([...this.gates.values()]);this.contextTransports.clear();this.operations.clear();this.store.close();this.initialized=false;})();
+  const run=(async()=>{const ops=[...this.operations.values()];for(const op of ops)op.reject(fault('STOPPED','Executor stopped'));await Promise.allSettled([...ops.map(o=>o.transport),...this.contextTransports].map(t=>t.stop()));await Promise.allSettled(ops.map(o=>o.done));await Promise.allSettled([...this.cancellations]);for(const op of ops.filter(o=>o.cleanupFailed)){if(!(await this.retryCleanup(op)))throw op.cleanupError;}for(const transport of this.contextTransports)await transport.stop();await Promise.allSettled([...this.gates.values()]);this.contextTransports.clear();this.operations.clear();this.store.close();this.initialized=false;})();
   this.stopPromise=run;try{return await run}catch(e){this.stopPromise=null;throw e;}
  }
 }

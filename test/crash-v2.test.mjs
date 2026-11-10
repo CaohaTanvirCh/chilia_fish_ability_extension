@@ -7,6 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { ExecutionStore } from '../packages/task-store-v2/index.mjs';
+import { DshAcpExecutor } from '../packages/dsh-acp-v2/index.mjs';
 
 const fixtureScript = fileURLToPath(new URL('./fixtures/crash-v2.mjs', import.meta.url));
 function directory(t) {
@@ -38,6 +39,30 @@ for (const hook of ['afterCreate', 'beforePrompt', 'beforeTerminalCommit', 'afte
     const after = reopen(dir); assert.equal(prompts(dir), promptCount); assert.deepEqual(after.executions, before.executions); assert.deepEqual(after.requests, before.requests);
   });
 }
+
+test('post-terminal crash marks binding unknown and reconcile restores the next execution', { timeout: 15000 }, async t => {
+  const dir = directory(t); assert.equal(child(dir, 'afterTerminalCommit'), 73);
+  const store = new ExecutionStore(dir).open(); const state = store.snapshot(); store.close();
+  assert.equal(state.bindings[0].availability, 'unknown');
+  assert.equal(state.bindings[0].recoveryRequired, true);
+  assert.ok(state.executions[0].diagnostics.some(item => item.code === 'TERMINAL_SESSION_UNSETTLED'));
+  class RestoreTransport {
+    async start() { return { agentCapabilities: { sessionCapabilities: { resume: {}, close: {} } } }; }
+    async request(method) { if (method === 'session/prompt') return { stopReason: 'end_turn' }; return {}; }
+    async notify() {}
+    async stop() {}
+  }
+  const x = new DshAcpExecutor({ store: new ExecutionStore(dir), transportFactory: () => new RestoreTransport(), sessionOperationTimeoutMs: 1000, cancelTimeoutMs: 100 });
+  await x.start();
+  try {
+    const task = (await x.listTasks())[0];
+    await x.resumeTask(task.taskId);
+    assert.equal((await x.store.snapshot()).bindings[0].availability, 'closed');
+    const next = await x.startExecution(task.taskId, { requestKey: 'after-terminal-crash', prompt: 'next' });
+    await x.waitForTask(task.taskId);
+    assert.equal((await x.getExecution(next.executionId)).status, 'completed');
+  } finally { await x.stop(); }
+});
 
 test('kill executor child during cancellation leaves unknown without fabricated cancellation receipt (simulated ACP)', { timeout: 15000 }, async t => {
   const dir = directory(t); const proc = spawn(process.execPath, [fixtureScript, dir, 'cancel-kill'], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });

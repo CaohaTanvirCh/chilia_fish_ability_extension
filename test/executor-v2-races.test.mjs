@@ -66,6 +66,19 @@ test('failed task close persists closed lifecycle and cleanup can be retried',as
  p.closeError=null;
  await x.closeTask(task.taskId);
 });
+test('closeTask retries a failed transport cleanup and confirms the binding only after success',async t=>{
+ const {x,transports}=await setup(t);const task=await x.createTask(input('cleanup-retry')),p=transports[0];await p.entered.promise;
+ p.stopError=Object.assign(new Error('process still alive'),{code:'SHUTDOWN_TIMEOUT'});p.prompt.resolve({stopReason:'end_turn'});await x.waitForTask(task.taskId);
+ assert.equal((await x.healthCheck()).cleanupFailures.length,1);
+ await assert.rejects(x.closeTask(task.taskId),{code:'CLEANUP_FAILED'});
+ assert.equal((await x.getTask(task.taskId)).lifecycle,'closed');
+ const binding=()=>x.store.snapshot().bindings.find(b=>b.bindingId===(x.store.snapshot().bindings[0]?.bindingId));
+ assert.equal(binding().availability,'unknown');
+ p.stopError=null;
+ await x.closeTask(task.taskId);
+ assert.equal((await x.healthCheck()).cleanupFailures.length,0);
+ assert.equal(binding().availability,'closed');
+});
 test('dispatching deferred work obeys the global execution limit',async t=>{
  const {x,transports}=await setup(t,{maxConcurrent:1});
  const first=await x.createTask({...input('queued-first'),defer:true});const second=await x.createTask({...input('queued-second'),defer:true});

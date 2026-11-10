@@ -34,10 +34,10 @@ Task：未解决unknown优先于新执行成功，activeExecutionId单独查询�
 | 用户场景 | 证据与预期 |
 | --- | --- |
 | 创建后Hub退出 | crash-v2 afterCreate真Node退出：queued保留、原key重试不发prompt |
-| 提交后退出 | beforePrompt提交意图后退出：unknown、无自动重发；runtime-death子进程已有prompt后断连同样unknown |
+| 提交后退出 | beforePrompt提交意图后退出：unknown、无自动重发；runtime-death 在本地持久化 dispatch intent 后断连，同样 unknown；不证明 DSH 已收到或执行 Prompt |
 | DSH完成、本地终态写入前退出 | beforeTerminalCommit模拟完成后真实进程退出：partial/unknown，无收据 |
 | 终态写入后、应答前退出 | afterTerminalCommit退出：保留completed，原key返回同执行 |
-| Runtime执行中退出 | 模拟及真实DSH均覆盖，unknown、不伪造收据 |
+| Runtime在 dispatch intent 后退出 | 模拟及真实DSH均覆盖“本地已持久化 dispatch intent 后 kill”；unknown、不伪造收据。未证明 DSH 已开始执行或发生工具副作用 |
 | ACP断开进程存活 | 模拟官方SDK wire及Transport测试：清理后才返回/替换 |
 | 恢复失败/重复恢复/恢复中停机 | recovery-v2：新连接、不新增Execution、不改旧终态；停机拥有并清理恢复进程 |
 | 取消中Hub退出 | 子进程kill：保留取消请求，unknown，没有confirmedAt |
@@ -48,7 +48,7 @@ Task：未解决unknown优先于新执行成功，activeExecutionId单独查询�
 | Store/Session不一致 | 绑定唯一性、恢复失败不覆盖终态、可能提交unknown、原子提交失败后重新打开unknown |
 | 并发启动/准入 | Store单所有者、Hub16条命令上限、8个执行门禁与defer dispatch限额 |
 
-“长任务”是确定性缩时/静默/超时路径验证，没有进行数小时真实DSH浸泡测试；本报告不把150ms模拟静默称为真实长时间稳定运行。真实Runtime kill发生在匹配executionId的dispatch/running后，证明已发送阶段中断处理，不能证明已经产生工具副作用。所有真实prompt要求不调用工具。
+“长任务”是确定性缩时/静默/超时路径验证，没有进行数小时真实DSH浸泡测试；本报告不把150ms模拟静默称为真实长时间稳定运行。真实Runtime kill发生在持久化 dispatch_intent 之后；它证明本地已决定发送后的中断处理，**不能证明 DSH 已收到/执行 Prompt，也不能证明工具副作用发生**。所有真实prompt要求不调用工具。该证据边界已按 Phase 1.1.2 N09 修正。
 
 ## 容量与I/O
 
@@ -79,3 +79,17 @@ Task：未解决unknown优先于新执行成功，activeExecutionId单独查询�
 - 迁移把旧结果标legacy-unverified/unknown；完整原事件备份保留，不假称可精确重建v1所有Execution。
 
 验收结论：Task/Execution/Session边界、取消确认、幂等门禁、原子持久化、并发隔离、故障恢复、容量及测试分类已交付；受ACP限制的不可恢复结果明确未实现。建议接受为Phase1.1有明确限制的完成版本。是否进入Phase2由用户决定，本次不启动任何集成。
+
+## Phase 1.1.1 / 1.1.2 修复后复核
+
+独立审查 N01–N09 已按 `docs/phase-1.1.1-1.1.2-fix-report.md` 修复。当前版本 0.1.2 的复核结果：
+
+| 类别 | 结果 | 日志 |
+| --- | --- | --- |
+| Unit/store/migration | 65 passed / 0 failed | `logs/phase1.1.1-unit.txt` |
+| Simulated ACP/Transport/Hub/fault | 35 passed / 0 failed | `logs/phase1.1.1-simulated.txt` |
+| Real Windows DSH ACP | PASS；8 组检查 | `logs/phase1.1.1-real-console.txt`、`logs/real-v2-2026-11-10T05-59-41-670Z.jsonl` |
+| 关键竞态重复运行 | 3 次 × 25 项全部通过 | `logs/phase1.1.1-repeat.txt` |
+| 合并全量本地测试 | 100 passed / 0 failed | `logs/phase1.1.2-all.txt` |
+
+本节的 65/35 是修复后数量；上方 57/31 是 Phase 1.1 当时的历史结果，不应混用。N09 证据边界以本节和修复报告为准：真实 kill 仅证明 dispatch intent 后中断，不证明 DSH 已执行 Prompt 或发生工具副作用。其余未验证项（真实长任务、工具及孙进程、Desktop UI、多客户端）仍保持未验证。

@@ -13,22 +13,24 @@
 | getTask/listTasks | 返回总体状态、活动指针、未解决ID及风险 |
 | getExecution/listExecutions | 返回不可覆盖执行历史、输出完整性、取消与证据 |
 | resumeTask/reconcileTask | 仅协调/验证上下文；resume不接受prompt，旧调用MIGRATION_REQUIRED |
-| cancelExecution/cancelTask | 以指定执行或Task活动执行请求取消；发送不等于确认 |
-| closeSession | 取消/结算并确认上下文关闭，不删除Execution |
-| closeTask | 先持久化closed意图阻止新轮，再清理Session；失败允许重试 |
+| cancelExecution | 返回 `{execution,cancelRequested,cancelConfirmed}`；请求与确认严格分离 |
+| cancelTask | 对Task活动执行请求取消并返回Task；不承诺已确认 |
+| acknowledgeIntegrityAlerts(taskId,{acknowledgedBy,note?}) | 人工确认仍保留的完整性警报；不删除原记录、不证明结果完整，风险仍保留 |
+| closeSession | 取消/结算并确认上下文关闭，不删除Execution；可重试cleanup |
+| closeTask | 先持久化closed意图阻止新轮，再清理Session；失败保留closed并允许重试 |
 | getEvents(afterSequence=0,limit=100) | 精简持久事件续读，limit至多1000 |
 | subscribeEvents | SDK内实时订阅，可选显式重放游标 |
 | stop | 停用、等待取消与上下文操作，释放Store；失败保留资源并允许重试 |
 
-stdio命令仍为 `{id,method,args:[]}`，结果 `{id,result}`，错误 `{id,error:{code,message}}`，事件 `{type:'event',event}`。id仅响应关联；requestKey才是持久化幂等键，同key不同输入拒绝。同key返回原记录，不触发自动重发，甚至原记录为queued或unknown。
+stdio命令仍为 `{id,method,args:[]}`，结果 `{id,result}`，错误 `{id,error:{code,message}}`，事件 `{type:'event',event}`。id仅响应关联；requestKey才是持久化幂等键，同key不同输入拒绝。`createTask` 的输入摘要包含 `defer`；旧版本未包含 defer 的请求记录仍按旧语义重放，不会因升级而改变已提交请求。同key返回原记录，不触发自动重发，甚至原记录为queued或unknown。
 
 ## 状态与结果
 
 七种状态保留。Execution completed要求 end_turn证据+observed_complete结果同事务；cancelled要求ACP取消响应或确定未提交的本地取消。断连、未确认超时或完成未落盘为unknown。已提交终态不可更改；诊断及取消发送时间可补充。
 
-Task投影：有任一历史unknown/interrupted或完整性警报，整体unknown；否则活动Execution状态；否则最新Execution状态。activeExecutionId独立返回。显式承认风险后新尝试完成，不会掩盖旧unknown。lifecycle closed只表示不再接受新执行。
+Task投影：有任一历史unknown/interrupted或未确认的完整性警报，整体unknown；已人工确认的警报仍保留在Task中，但不再单方面迫使状态unknown，`duplicateExecutionRisk` 仍为true。否则活动Execution状态；否则最新Execution状态。activeExecutionId独立返回。显式承认unknown后新尝试完成，不会掩盖旧unknown。lifecycle closed只表示不再接受新执行。
 
-恢复时queued/not_started保留；可能发送且无完成事务的记录unknown，不允许interrupted凭同事务内不存在的“额外收据”变completed。恢复Session不是恢复结果。
+恢复时queued/not_started保留；可能发送且无完成事务的记录unknown，不允许interrupted凭同事务内不存在的“额外收据”变completed。恢复Session不是恢复结果。终态Execution的Binding仍为active（终态提交后、清理确认前崩溃）时，恢复标Binding为unknown并记录 `TERMINAL_SESSION_UNSETTLED`，不伪造closed；`resumeTask`或`closeSession`可确认清理后再开始新执行。
 
 ## 通知
 
@@ -38,7 +40,7 @@ Task投影：有任一历史unknown/interrupted或完整性警报，整体unknow
 
 ## Store与容量
 
-公共Store为snapshot+commit(expectedRevision,changes)，原子提交Task/Execution/Binding/Request/Event。独占锁，v2文件state-v2.json；任何模块不得直接解析其他模块存储。事件只有ID/状态/字节数，不含累积结果。
+公共Store为snapshot+commit(expectedRevision,changes)，原子提交Task/Execution/Binding/Request/Event。独占锁，v2文件state-v2.json；任何模块不得直接解析其他模块存储。事件只有ID/状态/字节数，不含累积结果。Store校验引用、Session/Task所有权、active唯一、`latestExecutionId`必须指向最后创建的Execution、`Task.result`与最新Execution一致、`Task.sessionId`与最新Binding一致，以及lifecycle/submission/availability枚举；不一致快照以VALIDATION拒绝，不静默修复。
 
 默认输出1MiB/Execution；64KiB或250ms批量，至多32次时间/早期提交后停用时间刷新，字节刷新始终保留，终态强制flush；默认至多约49次输出提交。内存批次至多64KiB，允许一个大帧瞬时达到剩余额度后立即flush。Store32MiB/20,000events/1000Tasks/5000Executions；预留18MiB和1024events用于最多8个在途执行及终态。过高水位拒绝新工作，硬限失败健康状态退化，不伪造成功。无自动历史删除；应离线归档整个Store。配置更小容量时需相应降低输出/并发参数，不能把小测试限制作为生产容量保证。
 
@@ -50,4 +52,4 @@ node scripts/migrate-v1.mjs C:\path\legacy-store C:\path\NEW-v2-store
 
 停止旧Hub，源锁与目的迁移锁保证独占；保存原始字节备份，副本验证，目标必须不存在；发布期间MIGRATION_INCOMPLETE阻止读取。v1历史均导入unknown/uncertain，保存legacyReportedStatus，不伪造原始收据或猜测旧回合。原始events完整保留在legacy-v1-backup.json。自动在原目录升级被拒绝。迁移成功后修改配置目录再启动；回滚先停进程，不覆盖v2新增执行。
 
-错误包括IDEMPOTENCY_CONFLICT、UNKNOWN_EXECUTION、SESSION_UNSETTLED、INTEGRITY_ALERT、BUSY、CAPACITY、STORAGE_FAULT、MIGRATION_REQUIRED等。Store是本地已提交事实权威，不是DSH远端执行状态的全知数据库。
+错误包括IDEMPOTENCY_CONFLICT、UNKNOWN_EXECUTION、SESSION_UNSETTLED、INTEGRITY_ALERT、CLEANUP_FAILED、BUSY、CAPACITY、STORAGE_FAULT、MIGRATION_REQUIRED等。关闭失败后Hub可重试；`closeTask`会重试失败的transport清理，只有成功后才标记Binding closed。Store是本地已提交事实权威，不是DSH远端执行状态的全知数据库。

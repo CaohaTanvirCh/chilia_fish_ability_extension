@@ -102,3 +102,22 @@
 - 当前版本0.1.1；默认var/tasks-v2；v1模块保留兼容基线，不被新Hub运行引用。npm test:integration切换v2，legacy脚本保留独立命令。
 - 最终验收docs/phase-1.1-acceptance.md完整列出证据、8项架构答复、剩余限制。官方ACP无法回放丢失结果仍unknown；未验证Desktop UI同步和所有工具孙进程硬杀回收。
 - 停止于Phase1.1，等待用户验收与下一阶段范围；没有接入bot、主动聊天、B站、WSL或私有DSH数据库。
+
+## 2026-11-10 — Phase 1.1.1/1.1.2 独立审查修复
+
+- 依据 docs/phase-1.1-independent-review.md 修复 N01–N09；没有进入 Phase2 或接入任何 bot。
+- N01：抽出 apps/companion-hub/lifecycle.mjs；Hub stop 成功记忆化、失败清空并允许同一实例重试，并发 stop 共享同一 attempt；新增 hub-lifecycle 控制器测试和真实 Hub 子进程 + 注入 executor 的 hub-stop 测试（第一次 stop 失败、第二次成功）。main 顶层 finally 对在途失败再重试一次。
+- N02：ExecutionStore.open 识别终态 Execution 仍持 active Binding 的崩溃窗口，标 binding 为 unknown、recoveryRequired=true，并在 Execution 写 TERMINAL_SESSION_UNSETTLED 诊断；不伪造 closed。新增 afterTerminalCommit 崩溃后 resumeTask 再 startExecution 的测试。
+- N06：Executor 新增 retryCleanup；closeSession/closeTask/stop 会重试 cleanupFailed 的 transport，成功后才更新 binding 为 closed，失败保留诊断和操作。新增首次失败、第二次成功测试。
+- N03：失败终态写 ACP_STOP_REASON 诊断（含 max_tokens 等），不伪造 completed 或完成证据；新增失败 stopReason 测试。
+- N04：createTask 的 inputHash 纳入 defer；旧版本不含 defer 的 request 记录仍可按旧语义重放；新增 defer 冲突和 legacy hash 测试。
+- N05：ExecutionStore 增加 latestExecutionId 必须指向最后 Execution、Task.result 与最新 Execution 一致、Task.sessionId 与最新 Binding 一致、lifecycle/submission/availability 枚举和 integrityAlerts/风险一致性校验；反例以 VALIDATION 拒绝。更新 store fixtures 并新增语义反例测试。
+- N07：新增 acknowledgeIntegrityAlerts(taskId,{acknowledgedBy,note})；原警报保留并追加确认人/时间，确认不证明结果完整，duplicateExecutionRisk 继续为 true，不复用受影响 Session；新增确认后新 Session 测试。
+- N08：cancelExecution 返回 {execution,cancelRequested,cancelConfirmed}；取消超时/自然完成与确认取消分开；新增成功、超时、end_turn 竞态测试。
+- N09：integration-v2 将 waitRunning 改名 waitDispatchIntent，真实 kill 结果改称 runtime-kill-after-dispatch-intent，明确不证明远端执行/工具副作用；更新 acceptance 表述，旧日志原样保留。
+- 本次修复不改变 Windows 原生路线、官方 ACP、单 Store 所有者、unknown 不自动重发等约束。
+- 版本更新为0.1.2。最终分类：unit/store/migration 65 passed、simulated ACP/Transport/Hub/fault 35 passed，均0失败0跳过；合并npm test为100 passed、0 failed；日志logs/phase1.1.1-unit.txt、logs/phase1.1.1-simulated.txt、logs/phase1.1.2-all.txt。
+- 关键竞态与故障注入测试重复3次，每次25项全部通过；日志logs/phase1.1.1-repeat.txt。
+- 真实Windows DSH ACP回归通过，日志logs/real-v2-2026-11-10T05-59-41-670Z.jsonl、控制台logs/phase1.1.1-real-console.txt。该回归仍只证明dispatch intent后kill，不证明远端执行或工具副作用。
+- 修复报告docs/phase-1.1.1-1.1.2-fix-report.md，验收文档已增加Phase1.1.1/1.1.2复核节并修正N09表述。
+- 仍明确未验证：真实OS级不可杀进程、真实DSH终态崩溃窗口、真实工具及孙进程、长时间浸泡、Desktop UI同步、多客户端。停止等待用户审阅，不进入Phase2。
