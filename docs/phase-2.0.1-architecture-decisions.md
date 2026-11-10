@@ -1,9 +1,11 @@
 # Phase 2.0.1 Architecture Decisions
 
-状态：**Proposed Design Baseline / 设计冻结候选**
+状态：**Proposed Design Baseline / 设计冻结候选 + Phase 2.0.2 amendments**
 日期：2026-11-10（Asia/Hong_Kong）
 依据：`docs/phase-2.0-baseline-review.md`（审查提交 `f339873`）与 Phase 1.1 当前实现
 范围：只做设计决策，不实现代码，不修改 Store、Executor、ACP Transport 或测试。
+
+> **Phase 2.0.2 修订：** AD-06 至 AD-11 见 `docs/phase-2.0.2-architecture-decisions.md`。与本文件冲突时，以 2.0.2 为准；重点覆盖 Artifact ACL（AD-06）、完整状态矩阵（AD-07）、Delegation 撤销/Controller 冻结（AD-08）、Event 游标（AD-09）、requestKey 委托作用域（AD-10）、并行 Execution 与 Workspace mutex（AD-11）。
 
 本文件冻结五个跨阶段问题。这里的“冻结”指：后续实现不得在未新增 AD（Architecture Decision）的情况下改变这些语义；具体字段名仍可在 Contracts 评审时微调，但不得改变权限边界、状态含义或迁移方向。
 
@@ -16,6 +18,12 @@
 | AD-03 | private Task 使用显式可见性矩阵；Agent 访问必须同时满足自身权限、用户权限和委托范围 | 私有 Task、委托访问、所有读接口 |
 | AD-04 | Artifact 独立授权；Task 可见性只在 Artifact 创建时提供默认快照，不动态继承 | Artifact、文件权限、跨 Task 引用 |
 | AD-05 | 采用 Store v3 + API v3；v2 只作为离线迁移输入；不静默改 v2 | 持久化迁移、协议版本、legacy 任务 |
+| AD-06 | Artifact 创建时物化 ACL；Task 角色变化不隐式改变 Artifact | Artifact、Task owner/controller 转移 |
+| AD-07 | 补齐 Task/Execution/Lifecycle 完整迁移矩阵 | 状态机、错误码、审计事件 |
+| AD-08 | Delegation 撤销/过期立即冻结 Controller，不自动取消运行中 Execution | 委托、控制权、ArtifactGrant |
+| AD-09 | Event 分 workspace/system scope，游标每次重新授权 | 事件、订阅、隐私隔离 |
+| AD-10 | requestKey 作用于 workspace + actor + delegation + operation + key | 幂等、多 Agent、重放授权 |
+| AD-11 | 并行 Execution 与 Workspace mutex 分层；默认每 Workspace 一个写租约 | 调度、工作区隔离、租约恢复 |
 
 ## 1. 术语和不可破坏的不变量
 
@@ -102,6 +110,8 @@ hasIntegrityRisk          未确认警报或重复执行风险
 
 ### 2.2 Task 状态迁移矩阵
 
+> **AD-07 已修订此矩阵。** 完整且权威的 Task/Execution/Lifecycle 矩阵见 `docs/phase-2.0.2-architecture-decisions.md` 第 2 节；下表保留为 2.0.1 的历史摘要。
+
 | 当前 | 事件 | 下一状态 | 说明 |
 |---|---|---|---|
 | open | 首个 Execution 进入 queued/running | active | 自动 |
@@ -137,6 +147,8 @@ hasIntegrityRisk          未确认警报或重复执行风险
 6. Store v3 的绑定唯一性改为：`(taskId, executionId)` 唯一；`sessionId` 可在同一 Task 的顺序 Binding 中复用，但同一 Session 同时至多一个 active Binding，且不得跨 Task 共享。旧 v2 Binding 迁移时补 `executionId`，无法归属的标记 `legacy_unbound`，不得猜测。
 
 ### 2.4 并行工作的安全默认值
+
+> **AD-11 已补充此节。** 并行数据模型、Workspace mutex、写租约和崩溃恢复的权威规则见 `docs/phase-2.0.2-architecture-decisions.md` 第 6 节。
 
 Phase 2.0 要求“并行 Execution 不默认共享可写目录”。当前 DSH ACP 没有 worktree 管理能力，因此：
 
@@ -219,14 +231,20 @@ Task:
   requestedByPrincipalId       User 或 null
   createdByPrincipalId         实际调用者
   controllerPrincipalId        当前唯一控制者
+  controllerDelegationId       当前 Controller 委托来源，可空
+  controlState                 active | frozen（AD-08）
+  controllerFrozenReason
+  controllerFrozenAt
   visibility                   workspace | private
   goalStatus
   lifecycle
   latestExecutionId
   selectedExecutionId
+  delegationId               创建 Task 时的委托来源，可空
   workingDirectory           Workspace root 下的相对路径；legacy 任务可为空
   legacyCwd                 仅迁移保留的旧绝对目录；不作为新 Workspace root
   archivedAt / deletedAt
+  deletedFrom                live | archived（AD-07，删除前 lifecycle）
   createdAt / updatedAt
   legacy                    可选的迁移元数据（来源版本/原状态）
 ```
@@ -413,6 +431,8 @@ ArtifactGrant:
 
 ### 5.2 默认继承的精确定义
 
+> **AD-06 已修订 Artifact ACL 与 Task 角色变化的关系。** 读取时不再按当前 Task 角色动态判断；创建时物化 owner/visibility/grant，Controller 转移/冻结有明确的 grant 同步。完整规则见 `docs/phase-2.0.2-architecture-decisions.md` 第 1 节。
+
 **默认继承是创建时快照，不是动态继承。**
 
 - Artifact 创建时，若来源 Task 为 private，则 Artifact 默认 `visibility=private`；
@@ -428,7 +448,7 @@ ArtifactGrant:
 #### private
 
 - Artifact owner；
-- 来源 Task 的 owner/requestedBy/controller；
+- 创建事务中物化的 `origin=task-snapshot-requester` / `origin=task-snapshot-controller` grant；
 - Workspace Owner/Admin；
 - 显式 ArtifactGrant 的 grantee；
 - 通过有效委托访问来源 Task 的 Agent，且 scope 包含 `artifact:read`。
@@ -481,6 +501,7 @@ requests
 artifacts
 artifactReferences
 artifactGrants
+workspaceLeases（AD-11）
 events
 ```
 
@@ -531,9 +552,11 @@ events
 
 #### Binding / Request / Event
 
+> **AD-09/AD-10 已修订本段。** Event 的 workspace/system scope 与游标见 2.0.2 第 4 节；requestKey 的委托作用域见 2.0.2 第 5 节。
+
 - Binding：补 `executionId`；无法归属的执行标记 `legacy_unbound`，不猜测。
-- Request：v2 全局 key 迁移为 `scope=legacy`；新 key 使用 `(workspaceId, principalId, key)`；旧 key 重放必须重新授权。
-- Event：补 `workspaceId`、`schemaVersion=1`；`correlationId/causationId=null`；保留原 eventId/sequence；不重写历史事件内容。
+- Request：v2 全局 key 迁移为 `scope=legacy`；新 key 使用 `(workspaceId, actorPrincipalId, delegationId, operation, key)`；旧 key 重放必须重新授权。
+- Event：补 `workspaceId`、`scope`、`schemaVersion=1`；`correlationId/causationId=null`；保留原 eventId/sequence；不重写历史事件内容。
 - Artifact：v2 没有 Artifact，迁移不生成 Artifact；不把 `Task.result` 文本自动当文件产物。
 
 ### 6.4 状态映射（关键）
