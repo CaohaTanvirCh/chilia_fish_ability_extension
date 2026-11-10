@@ -1,0 +1,49 @@
+
+> fish-ability-extensions@0.1.3 test:simulated
+> node --test test/transport.test.mjs test/hub.test.mjs test/hub-lifecycle.test.mjs test/hub-stop.test.mjs test/crash-v2.test.mjs test/simulated-acp-v2.test.mjs
+
+✔ real Node exit at afterCreate: durable state and key replay, simulated ACP (134.4506ms)
+✔ real Node exit at beforePrompt: durable state and key replay, simulated ACP (128.9474ms)
+✔ real Node exit at beforeTerminalCommit: durable state and key replay, simulated ACP (120.9267ms)
+✔ real Node exit at afterTerminalCommit: durable state and key replay, simulated ACP (125.2843ms)
+✔ post-terminal crash marks binding unknown and reconcile restores the next execution (86.7398ms)
+✔ closed binding with stale recoveryRequired is normalized without a remote close (67.7258ms)
+✔ remote close success followed by local commit failure is not reported as recovered (67.9163ms)
+✔ kill executor child during cancellation leaves unknown without fabricated cancellation receipt (simulated ACP) (58.0933ms)
+✔ runtime disconnect in real executor child persists unknown and partial output (simulated ACP) (58.8247ms)
+✔ hub lifecycle shares concurrent stop and retries after a rejected cleanup (1.1335ms)
+✔ hub lifecycle does not repeat a successful cleanup (0.1108ms)
+✔ spawned Hub retries executor.stop after the first cleanup failure in the same instance (110.1119ms)
+✔ hub rejects a flood above 16 in-flight commands with BUSY (124.4171ms)
+✔ hub bounds unterminated multibyte UTF-8 input by bytes (125.6117ms)
+✔ hub rejects oversized terminated lines before JSON parsing (116.095ms)
+✔ hub rejects malformed UTF-8 and remains available for the next command (116.4121ms)
+✔ hub accepts UTF-8 command within byte bound and exposes event cursor reads (124.2917ms)
+✔ hub disabled does not create storage or runtime (107.1987ms)
+✔ hub constructor failure does not leak store lock (102.2092ms)
+✔ hub without tasks initializes store without spawning ACP (114.4598ms)
+✔ hub health and stop use JSON stdout and clean shutdown (110.3715ms)
+✔ simulated ACP wire: silent prompt ordered notifications drain before atomic completion (303.9937ms)
+✔ simulated ACP wire: Runtime death preserves unknown without automatic retry (118.6797ms)
+✔ simulated ACP wire: stdout disconnect surviving process cleaned before task returns (3576.696ms)
+✔ simulated ACP wire: ignored cancel deadline is unknown, never false cancelled (334.3317ms)
+✔ official SDK subprocess disconnect rejects pending request (111.5697ms)
+✔ request timeout and stop release child (226.8163ms)
+✔ permission requests are denied by default (128.6385ms)
+✔ concurrent starts share handshake and initialization result (231.4508ms)
+✔ closed stdout child is reaped before replacement and cannot disconnect replacement (2107.3984ms)
+✔ stop during startup leaves no owned child (327.1174ms)
+✔ failed termination is bounded and preserves ownership for retry (29.7538ms)
+✔ missing executable fails startup (6.2304ms)
+✔ starts during stop reject and a later start owns a fresh child (551.8229ms)
+✔ failed stop blocks replacement until old generation cleanup succeeds (174.9986ms)
+✔ request timer overflow rejects before sending including derived overrides (0.3882ms)
+✔ repeated failed starts and stops clean up before successful replacement (329.751ms)
+ℹ tests 37
+ℹ suites 0
+ℹ pass 37
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4482.3413

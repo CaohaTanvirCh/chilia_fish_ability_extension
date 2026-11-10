@@ -68,6 +68,28 @@ test('all required Task projection fields cannot be omitted when executions exis
   }
 });
 
+test('Executor refuses a task projection missing result before commit or transport', async t => {
+  const dir = fixture(t); seed(dir); const store = new ExecutionStore(dir).open(); const snapshot = store.snapshot(); store.close();
+  const task = snapshot.tasks[0];
+  Object.assign(task, {status: 'completed', activeExecutionId: null, unresolvedExecutionIds: [], result: 'partial', duplicateExecutionRisk: false});
+  Object.assign(snapshot.executions[0], {status: 'completed', result: 'partial', resultIntegrity: 'observed_complete', completionEvidence: {stopReason: 'end_turn'}});
+  snapshot.bindings[0].availability = 'closed'; snapshot.bindings[0].recoveryRequired = false;
+  delete task.result;
+  assert.equal(Object.hasOwn(task, 'result'), false);
+  const before = structuredClone(snapshot);
+  let commits = 0, transports = 0;
+  const fake = {open() { return this; }, close() {}, snapshot() { return structuredClone(snapshot); }, healthCheck() { return {healthy: true}; }, commit() { commits++; throw new Error('must not commit'); }};
+  const x = new DshAcpExecutor({store: fake, transportFactory: () => { transports++; throw new Error('must not launch'); }});
+  await x.start();
+  try {
+    await assert.rejects(x.startExecution('t1', {requestKey: 'new', prompt: 'next'}), {code: 'INVALID_TASK_PROJECTION'});
+    assert.equal(commits, 0);
+    assert.equal(transports, 0);
+    assert.deepEqual(fake.snapshot().tasks, before.tasks);
+    assert.deepEqual(fake.snapshot().executions, before.executions);
+  } finally { await x.stop(); }
+});
+
 test('Executor refuses a task projection missing unresolvedExecutionIds instead of treating it as empty', async t => {
   const dir = fixture(t); seed(dir); const store = new ExecutionStore(dir).open(); const snapshot = store.snapshot(); store.close();
   delete snapshot.tasks[0].unresolvedExecutionIds;

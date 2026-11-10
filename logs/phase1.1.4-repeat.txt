@@ -1,0 +1,255 @@
+===== RUN 1 =====
+TAP version 13
+# Subtest: unknown execution requires unresolvedExecutionIds to be present and exact
+ok 1 - unknown execution requires unresolvedExecutionIds to be present and exact
+  ---
+  duration_ms: 98.2488
+  type: 'test'
+  ...
+# Subtest: Store commit also rejects a Task projection that omits unresolvedExecutionIds
+ok 2 - Store commit also rejects a Task projection that omits unresolvedExecutionIds
+  ---
+  duration_ms: 29.3838
+  type: 'test'
+  ...
+# Subtest: all required Task projection fields cannot be omitted when executions exist
+ok 3 - all required Task projection fields cannot be omitted when executions exist
+  ---
+  duration_ms: 230.4516
+  type: 'test'
+  ...
+# Subtest: Executor refuses a task projection missing result before commit or transport
+ok 4 - Executor refuses a task projection missing result before commit or transport
+  ---
+  duration_ms: 21.6824
+  type: 'test'
+  ...
+# Subtest: Executor refuses a task projection missing unresolvedExecutionIds instead of treating it as empty
+ok 5 - Executor refuses a task projection missing unresolvedExecutionIds instead of treating it as empty
+  ---
+  duration_ms: 25.0342
+  type: 'test'
+  ...
+# Subtest: correct unresolved history is loadable but startExecution still requires explicit acknowledgement
+ok 6 - correct unresolved history is loadable but startExecution still requires explicit acknowledgement
+  ---
+  duration_ms: 29.2931
+  type: 'test'
+  ...
+# Subtest: explicit acknowledgement retains the original unknown execution and duplicate risk
+ok 7 - explicit acknowledgement retains the original unknown execution and duplicate risk
+  ---
+  duration_ms: 28.4615
+  type: 'test'
+  ...
+# Subtest: a closed binding cannot hide an unresolved unknown execution from context restore
+ok 8 - a closed binding cannot hide an unresolved unknown execution from context restore
+  ---
+  duration_ms: 31.6919
+  type: 'test'
+  ...
+# Subtest: invalid resultIntegrity and integrity alert references fail closed
+ok 9 - invalid resultIntegrity and integrity alert references fail closed
+  ---
+  duration_ms: 127.8667
+  type: 'test'
+  ...
+# Subtest: active and latest pointers cannot be missing, cross-task, or point at the wrong execution
+ok 10 - active and latest pointers cannot be missing, cross-task, or point at the wrong execution
+  ---
+  duration_ms: 296.7174
+  type: 'test'
+  ...
+# Subtest: normal completed, failed, and cancelled snapshots remain loadable
+ok 11 - normal completed, failed, and cancelled snapshots remain loadable
+  ---
+  duration_ms: 99.2183
+  type: 'test'
+  ...
+# Subtest: v1 to v2 migration remains loadable under strict projection rules
+ok 12 - v1 to v2 migration remains loadable under strict projection rules
+  ---
+  duration_ms: 47.7012
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1126.2261
+
+EXIT=0
+===== RUN 2 =====
+TAP version 13
+# Subtest: unknown execution requires unresolvedExecutionIds to be present and exact
+ok 1 - unknown execution requires unresolvedExecutionIds to be present and exact
+  ---
+  duration_ms: 91.8571
+  type: 'test'
+  ...
+# Subtest: Store commit also rejects a Task projection that omits unresolvedExecutionIds
+ok 2 - Store commit also rejects a Task projection that omits unresolvedExecutionIds
+  ---
+  duration_ms: 19.0981
+  type: 'test'
+  ...
+# Subtest: all required Task projection fields cannot be omitted when executions exist
+ok 3 - all required Task projection fields cannot be omitted when executions exist
+  ---
+  duration_ms: 223.6534
+  type: 'test'
+  ...
+# Subtest: Executor refuses a task projection missing result before commit or transport
+ok 4 - Executor refuses a task projection missing result before commit or transport
+  ---
+  duration_ms: 22.8847
+  type: 'test'
+  ...
+# Subtest: Executor refuses a task projection missing unresolvedExecutionIds instead of treating it as empty
+ok 5 - Executor refuses a task projection missing unresolvedExecutionIds instead of treating it as empty
+  ---
+  duration_ms: 23.0821
+  type: 'test'
+  ...
+# Subtest: correct unresolved history is loadable but startExecution still requires explicit acknowledgement
+ok 6 - correct unresolved history is loadable but startExecution still requires explicit acknowledgement
+  ---
+  duration_ms: 22.4593
+  type: 'test'
+  ...
+# Subtest: explicit acknowledgement retains the original unknown execution and duplicate risk
+ok 7 - explicit acknowledgement retains the original unknown execution and duplicate risk
+  ---
+  duration_ms: 19.8532
+  type: 'test'
+  ...
+# Subtest: a closed binding cannot hide an unresolved unknown execution from context restore
+ok 8 - a closed binding cannot hide an unresolved unknown execution from context restore
+  ---
+  duration_ms: 24.0626
+  type: 'test'
+  ...
+# Subtest: invalid resultIntegrity and integrity alert references fail closed
+ok 9 - invalid resultIntegrity and integrity alert references fail closed
+  ---
+  duration_ms: 101.7339
+  type: 'test'
+  ...
+# Subtest: active and latest pointers cannot be missing, cross-task, or point at the wrong execution
+ok 10 - active and latest pointers cannot be missing, cross-task, or point at the wrong execution
+  ---
+  duration_ms: 284.6852
+  type: 'test'
+  ...
+# Subtest: normal completed, failed, and cancelled snapshots remain loadable
+ok 11 - normal completed, failed, and cancelled snapshots remain loadable
+  ---
+  duration_ms: 84.3721
+  type: 'test'
+  ...
+# Subtest: v1 to v2 migration remains loadable under strict projection rules
+ok 12 - v1 to v2 migration remains loadable under strict projection rules
+  ---
+  duration_ms: 48.3921
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1021.5486
+
+EXIT=0
+===== RUN 3 =====
+TAP version 13
+# Subtest: unknown execution requires unresolvedExecutionIds to be present and exact
+ok 1 - unknown execution requires unresolvedExecutionIds to be present and exact
+  ---
+  duration_ms: 100.8
+  type: 'test'
+  ...
+# Subtest: Store commit also rejects a Task projection that omits unresolvedExecutionIds
+ok 2 - Store commit also rejects a Task projection that omits unresolvedExecutionIds
+  ---
+  duration_ms: 27.9335
+  type: 'test'
+  ...
+# Subtest: all required Task projection fields cannot be omitted when executions exist
+ok 3 - all required Task projection fields cannot be omitted when executions exist
+  ---
+  duration_ms: 225.1449
+  type: 'test'
+  ...
+# Subtest: Executor refuses a task projection missing result before commit or transport
+ok 4 - Executor refuses a task projection missing result before commit or transport
+  ---
+  duration_ms: 23.5112
+  type: 'test'
+  ...
+# Subtest: Executor refuses a task projection missing unresolvedExecutionIds instead of treating it as empty
+ok 5 - Executor refuses a task projection missing unresolvedExecutionIds instead of treating it as empty
+  ---
+  duration_ms: 25.9413
+  type: 'test'
+  ...
+# Subtest: correct unresolved history is loadable but startExecution still requires explicit acknowledgement
+ok 6 - correct unresolved history is loadable but startExecution still requires explicit acknowledgement
+  ---
+  duration_ms: 22.9244
+  type: 'test'
+  ...
+# Subtest: explicit acknowledgement retains the original unknown execution and duplicate risk
+ok 7 - explicit acknowledgement retains the original unknown execution and duplicate risk
+  ---
+  duration_ms: 21.6875
+  type: 'test'
+  ...
+# Subtest: a closed binding cannot hide an unresolved unknown execution from context restore
+ok 8 - a closed binding cannot hide an unresolved unknown execution from context restore
+  ---
+  duration_ms: 27.4063
+  type: 'test'
+  ...
+# Subtest: invalid resultIntegrity and integrity alert references fail closed
+ok 9 - invalid resultIntegrity and integrity alert references fail closed
+  ---
+  duration_ms: 117.3769
+  type: 'test'
+  ...
+# Subtest: active and latest pointers cannot be missing, cross-task, or point at the wrong execution
+ok 10 - active and latest pointers cannot be missing, cross-task, or point at the wrong execution
+  ---
+  duration_ms: 312.9766
+  type: 'test'
+  ...
+# Subtest: normal completed, failed, and cancelled snapshots remain loadable
+ok 11 - normal completed, failed, and cancelled snapshots remain loadable
+  ---
+  duration_ms: 90.6801
+  type: 'test'
+  ...
+# Subtest: v1 to v2 migration remains loadable under strict projection rules
+ok 12 - v1 to v2 migration remains loadable under strict projection rules
+  ---
+  duration_ms: 53.8481
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1112.75
+
+EXIT=0

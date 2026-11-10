@@ -1,0 +1,48 @@
+TAP version 13
+# Subtest: Executor refuses a task projection missing result before commit or transport
+not ok 1 - Executor refuses a task projection missing result before commit or transport
+  ---
+  duration_ms: 31.2611
+  type: 'test'
+  location: '<baseline-worktree>\\test\\n05-store.test.mjs:71:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+    + Comparison {}
+    - Comparison {
+    -   code: 'INVALID_TASK_PROJECTION'
+    - }
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    code: 'INVALID_TASK_PROJECTION'
+  actual:
+  error: 'must not commit'
+  stack: |-
+    Object.commit (file:///<baseline-worktree>/test/n05-store.test.mjs:81:175)
+    DshAcpExecutor.commit (file:///<baseline-worktree>/packages/dsh-acp-v2/index.mjs:37:56)
+    file:///<baseline-worktree>/packages/dsh-acp-v2/index.mjs:73:8
+    async DshAcpExecutor.gate (file:///<baseline-worktree>/packages/dsh-acp-v2/index.mjs:44:143)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (file:///<baseline-worktree>/test/n05-store.test.mjs:85:5)
+    async Test.run (node:internal/test_runner/test:1332:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///<baseline-worktree>/test/n05-store.test.mjs:85:5)
+    async Test.run (node:internal/test_runner/test:1332:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 274.6607
