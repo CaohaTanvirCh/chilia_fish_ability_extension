@@ -6,6 +6,8 @@
 审查报告：`docs/phase-2.0.2-design-consistency-review.md`
 范围：只修订设计文档，不实现代码，不修改 Contracts、Store、Executor、ACP Transport 或测试。
 
+> **Phase 2.0.3 补充：** AD-12 至 AD-14 见 `docs/phase-2.0.3-implementation-constraints.md`。AD-12 收紧 AD-08 的授权检查，AD-13 收紧 AD-11 的强制释放，AD-14 修正 AD-07 的 interrupted 聚合；与本文件冲突时以 2.0.3 为准。
+
 本文件新增 **AD-06 至 AD-11**，并修正 Phase 2.0.1 中容易产生隐性矛盾的六处边界：
 
 1. Artifact ACL 与 Task 角色变化的关系；
@@ -98,7 +100,7 @@ open | active | awaiting_decision | completed | failed | cancelled
 |---|---|---|---|---|
 | — | 创建 Task，无 Execution | 合法 Workspace/owner/controller | open | `task.created` |
 | open | 首个 Execution 进入 queued/running | Task live、controller 有效 | active | `execution.created` 或 `execution.dispatched` |
-| active | 最后一个 queued/running Execution 进入终态或 unknown | 无显式目标决定 | awaiting_decision | `task.awaiting_decision` |
+| active | 最后一个 queued/running Execution 离开，变为 terminal/interrupted/unknown | 无显式目标决定 | awaiting_decision | `task.awaiting_decision` |
 | awaiting_decision | 新 Execution 进入 queued/running | 无未承认 unknown 风险或显式承认 | active | `execution.created` |
 | open/active/awaiting_decision | cancelTask | controller/owner/admin；取消所有 queued/running Execution | cancelled | `task.cancelled` |
 | awaiting_decision | completeTask | selected 指向 completed；无 queued/running；风险已记录 | completed | `task.completed` |
@@ -238,7 +240,7 @@ controllerFrozenAt
 ### 3.4 竞态：命令在执行中撤权
 
 - 每个认证上下文携带 `authorizationEpoch`；`DelegationGrant`、成员关系或 Principal 状态变化时递增。
-- 命令在入口和提交前各检查一次授权；如果 epoch 变化或 grant 已撤销，返回 `AUTHORIZATION_REVOKED`，不得产生任何状态写入。
+- 入口检查可以快速拒绝，但不是授权证明；最终授权检查必须与状态写入在同一个 Store commit 中完成（AD-12）。epoch/grant 已变化时返回 `AUTHORIZATION_REVOKED`/`AUTHORIZATION_STALE`，不得产生任何状态写入。
 - 已经进入 Executor 的 prompt 不因撤权而被伪造取消；其终态仍按真实证据记录。
 - 如果撤销发生在输出写入过程中，Hub 可以继续完成该 Execution 的内部持久化，但不能再把通知投递给被撤销主体。
 
@@ -388,7 +390,7 @@ Store v3 增加 `workspaceLeases` 集合；租约记录必须和 Execution 的 d
 - 一个 Workspace 同时最多一个 `held` 租约；
 - Execution 在持久化 dispatch_intent 之前必须获得租约；
 - 终态提交且 Session/进程清理完成后才释放；
-- unknown/interrupted 或清理未完成的 Execution **不得自动释放租约**；租约进入 `frozen`，阻止新的写执行，直到 Owner/Admin 显式 `releaseWorkspaceLease`/完成清理；
+- unknown/interrupted 或清理未完成的 Execution **不得自动释放租约**；租约进入 `frozen`，阻止新的写执行，直到 AD-13 的进程终止证明/实际 fencing 完成，或 Workspace 进入 quarantine；
 - 排队 Execution 保持 queued，按 FIFO/公平策略等待，不自动重试；
 - `maxRunningPerWorkspace=1`（mutex 默认）；`maxConcurrent=8` 只是全局上限；
 - 一个 Task 可以有多个 queued Execution，但 mutex 下不会同时 running。
@@ -410,7 +412,7 @@ Store v3 增加 `workspaceLeases` 集合；租约记录必须和 Execution 的 d
 
 - 租约获取/释放必须持久化，并与 Execution 状态/事件在同一 Store 事务或可验证的顺序中记录。
 - 进程崩溃后，若 Execution 为 unknown/interrupted 或 Session 清理未确认，租约保持 `frozen`；不能自动释放给下一个执行者。
-- Owner/Admin 显式释放时必须记录风险，并确认旧 Execution 不会被自动重发。
+- Owner/Admin 显式释放时不能只确认“不会自动重发”；必须按 AD-13 提供旧执行器停止证明、隔离副本或实际 fencing，否则只能 quarantine。
 - mutex 不改变 Phase 1.1 的 unknown 语义：等待租约不等于失败，也不自动创建新 Execution。
 
 ## 7. 一致性与验收检查

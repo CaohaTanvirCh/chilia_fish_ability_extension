@@ -1,11 +1,13 @@
 # Phase 2.0.1 Architecture Decisions
 
-状态：**Proposed Design Baseline / 设计冻结候选 + Phase 2.0.2 amendments**
+状态：**Proposed Design Baseline / 设计冻结候选 + Phase 2.0.2/2.0.3 amendments**
 日期：2026-11-10（Asia/Hong_Kong）
 依据：`docs/phase-2.0-baseline-review.md`（审查提交 `f339873`）与 Phase 1.1 当前实现
 范围：只做设计决策，不实现代码，不修改 Store、Executor、ACP Transport 或测试。
 
 > **Phase 2.0.2 修订：** AD-06 至 AD-11 见 `docs/phase-2.0.2-architecture-decisions.md`。与本文件冲突时，以 2.0.2 为准；重点覆盖 Artifact ACL（AD-06）、完整状态矩阵（AD-07）、Delegation 撤销/Controller 冻结（AD-08）、Event 游标（AD-09）、requestKey 委托作用域（AD-10）、并行 Execution 与 Workspace mutex（AD-11）。
+>
+> **Phase 2.0.3 补充：** AD-12 至 AD-14 见 `docs/phase-2.0.3-implementation-constraints.md`，分别收紧授权原子性、WorkspaceLease 强制释放和 interrupted 聚合；与 2.0.2 冲突时以 2.0.3 为准。
 
 本文件冻结五个跨阶段问题。这里的“冻结”指：后续实现不得在未新增 AD（Architecture Decision）的情况下改变这些语义；具体字段名仍可在 Contracts 评审时微调，但不得改变权限边界、状态含义或迁移方向。
 

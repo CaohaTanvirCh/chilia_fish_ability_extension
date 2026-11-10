@@ -6,6 +6,8 @@
 - `docs/phase-2.0.1-architecture-decisions.md`（基线提交 `ad736e5`）
 - `docs/phase-2.0.2-architecture-decisions.md`（本轮 AD-06 至 AD-11 修订）
 
+> Phase 2.0.3 又补充了 AD-12 至 AD-14，见 `docs/phase-2.0.3-implementation-constraints.md`；本报告保留为 2.0.2 的历史审查记录。
+
 审查性质：只读文档审查与设计修订；未修改业务代码、Contracts、Store、Executor、ACP Transport、测试或配置。
 
 ## 1. 结论
