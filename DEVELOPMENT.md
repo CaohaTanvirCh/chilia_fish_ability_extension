@@ -133,3 +133,14 @@
 - 迁移兼容：v1→v2 迁移快照仍可加载；旧 v2 若缺必填投影将被拒绝，不提供静默默认值/自动修复。
 - 最终自测：unit 76、simulated 37、合并 113，均0失败；N02/N05 关键反例重复3次×20通过；真实Windows DSH ACP回归通过（日志logs/real-v2-2026-11-10T06-34-55-196Z.jsonl）。
 - 版本更新为0.1.3；修复报告docs/phase-1.1.3-fix-report.md。结论仍为CONDITIONAL PASS，等待独立测试会话复验；不自行开始Phase2。
+
+## 2026-11-10 — Phase 1.1.4：N05-E1 Executor projection guard
+
+- 依据 docs/phase-1.1.3-final-review.md 只修复 N05-E1，未处理 N01/N03/P3，未进入 Phase2，未接入 bot。
+- 基线 918da3a 的 startExecution 必填投影列表遗漏 result。修复为在 newExecution/project/commit/launch 之前用 Object.hasOwn 检查 result，缺失时抛 INVALID_TASK_PROJECTION；不使用默认值、空字符串或 `??` 补齐。
+- 修复前探针在基线 worktree 中复现守卫绕过：测试期望 INVALID_TASK_PROJECTION，实际到达包装 Store 的 commit 并抛 must not commit；未用该探针声称完整执行完成。独立审查此前已在功能型包装 Store 上观察到新 Execution 完成和 5 次 commit。
+- 新增 test/n05-store.test.mjs 回归：completed 合法快照仅删除 result；包装 Store 的 commit/transportFactory 计数后抛错；断言拒绝码、commit=0、transport=0、Task/Execution 不变。
+- 保留既有 N05 覆盖：缺失 unresolved 仍拒绝、unknown 仍需显式 acknowledge、ack 后原 unknown/risk 保留、正常 completed/failed/cancelled 可加载、v1→v2 迁移可加载。
+- 自测：unit 77、simulated 37、合并 npm test 114，均 0 失败 0 跳过；N05 关键反例重复 3 次，每次 12 项全部通过；修复前聚焦探针 1 failed（预期），修复后 1 passed。日志 logs/phase1.1.4-*.txt。
+- 本轮未运行真实 DSH 集成；改动仅防御字段列表，不新增真实 DSH 证据，不改变既有真实 DSH 证据边界。
+- 版本保持 0.1.3（本轮未做版本号变更）；修复报告 docs/phase-1.1.4-fix-report.md。结论仍为 CONDITIONAL PASS，等待独立测试会话复验；不自行开始 Phase2。

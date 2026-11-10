@@ -1,4 +1,4 @@
-# Fish Ability Extensions — Phase 1.1.3
+# Fish Ability Extensions — Phase 1.1.4
 
 Windows 原生 TaskExecutor 可靠性实现；未接入 AstrBot、Cyrene、QQ/NapCat 或 Bilibili，未开启自启动。
 
@@ -13,6 +13,7 @@ npm start
 
 普通测试不调用模型；test:integration 使用真实 Windows DSH ACP 和已配置模型。当前运行入口使用 v2 Executor/Store；v1 模块保留用于兼容覆盖和显式迁移验证，不用于新 Hub。
 
+- [Phase 1.1.4 修复报告](docs/phase-1.1.4-fix-report.md)
 - [Phase 1.1.3 修复报告](docs/phase-1.1.3-fix-report.md)
 - [Phase 1.1.1/1.1.2 修复报告](docs/phase-1.1.1-1.1.2-fix-report.md)
 - [独立审查报告](docs/phase-1.1-independent-review.md)
