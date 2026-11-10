@@ -144,3 +144,14 @@
 - 自测：unit 77、simulated 37、合并 npm test 114，均 0 失败 0 跳过；N05 关键反例重复 3 次，每次 12 项全部通过；修复前聚焦探针 1 failed（预期），修复后 1 passed。日志 logs/phase1.1.4-*.txt。
 - 本轮未运行真实 DSH 集成；改动仅防御字段列表，不新增真实 DSH 证据，不改变既有真实 DSH 证据边界。
 - 版本保持 0.1.3（本轮未做版本号变更）；修复报告 docs/phase-1.1.4-fix-report.md。结论仍为 CONDITIONAL PASS，等待独立测试会话复验；不自行开始 Phase2。
+
+## 2026-11-10 — Phase 1.1.5：dispatchQueued 投影守卫
+
+- 依据 docs/phase-1.1.4-final-review.md 只修复 dispatchQueued 的 P2 关联缺口，未处理 N01/N03/P3，未进入 Phase2，未接入 bot。
+- 将 startExecution 原本的 Task 投影字段/类型检查抽成模块内 assertTaskProjection/requiredTaskProjection；startExecution 与 dispatchQueued 共用。检查仍为 Object.hasOwn 必填字段 + unresolved/integrityAlerts 数组 + duplicateExecutionRisk 布尔，不使用默认值/空字符串/`??` 补齐。
+- dispatchQueued 在读取 Task 后、并发/queued/lifecycle/busy 检查和 launch 之前调用该守卫；缺 result 时抛 INVALID_TASK_PROJECTION，不创建 transport、不 commit、不创建新 Execution，原 Task/Execution 不变。
+- 新增 test/n05-store.test.mjs 回归：合法 queued/not_started 快照仅删除 Task.result；包装 Store commit/transportFactory 计数后抛错；断言拒绝码、commit=0、transport=0、operations=0、Task/Execution 深度不变；Phase 1.1.4 startExecution 反例保留。
+- 幂等 requestKey 重放仍在投影检查之前返回原 Execution（不创建新 Execution、不 commit、不创建 transport），这是有意保留的既有语义；本轮未改 requestKey。resumeTask/reconcileTask/closeSession 等 context transport 明确不纳入本轮守卫，因为它们不启动新 Execution。
+- 自测：unit 78、simulated 37、合并 npm test 115，均 0 失败 0 跳过；N05 关键反例重复 3 次，每次 13 项全部通过；修复前聚焦探针 1 failed（预期，实际到达 launch/must not launch），修复后 1 passed。日志 logs/phase1.1.5-*.txt。
+- 本轮未运行真实 DSH 集成；改动仅防御检查和调用顺序，不新增真实 DSH 证据，不改变既有证据边界。
+- 修复报告 docs/phase-1.1.5-fix-report.md。结论仍为 CONDITIONAL PASS，等待独立测试会话复验；不自行开始 Phase2。
