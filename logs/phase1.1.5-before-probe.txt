@@ -4,17 +4,17 @@ not ok 1 - Executor dispatchQueued refuses a task projection missing result befo
   ---
   duration_ms: 31.7727
   type: 'test'
-  location: 'C:\\Users\\26648\\fish_abil_ext\\test\\n05-store.test.mjs:93:1'
+  location: '<repo-root>\\test\\n05-store.test.mjs:93:1'
   failureType: 'testCodeFailure'
   error: |-
     Expected values to be strictly deep-equal:
     + actual - expected
-    
+
     + Comparison {}
     - Comparison {
     -   code: 'INVALID_TASK_PROJECTION'
     - }
-    
+
   code: 'ERR_ASSERTION'
   name: 'AssertionError'
   expected:
@@ -22,18 +22,18 @@ not ok 1 - Executor dispatchQueued refuses a task projection missing result befo
   actual:
   error: 'must not launch'
   stack: |-
-    DshAcpExecutor.transportFactory (file:///C:/Users/26648/fish_abil_ext/test/n05-store.test.mjs:104:92)
-    DshAcpExecutor.launch (file:///C:/Users/26648/fish_abil_ext/packages/dsh-acp-v2/index.mjs:77:92)
-    file:///C:/Users/26648/fish_abil_ext/packages/dsh-acp-v2/index.mjs:75:492
-    async DshAcpExecutor.gate (file:///C:/Users/26648/fish_abil_ext/packages/dsh-acp-v2/index.mjs:44:143)
+    DshAcpExecutor.transportFactory (<repo-root>/test/n05-store.test.mjs:104:92)
+    DshAcpExecutor.launch (<repo-root>/packages/dsh-acp-v2/index.mjs:77:92)
+    <repo-root>/packages/dsh-acp-v2/index.mjs:75:492
+    async DshAcpExecutor.gate (<repo-root>/packages/dsh-acp-v2/index.mjs:44:143)
     async waitForActual (node:assert:646:5)
     async strict.rejects (node:assert:769:25)
-    async TestContext.<anonymous> (file:///C:/Users/26648/fish_abil_ext/test/n05-store.test.mjs:107:5)
+    async TestContext.<anonymous> (<repo-root>/test/n05-store.test.mjs:107:5)
     async Test.run (node:internal/test_runner/test:1332:7)
     async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
   operator: 'rejects'
   stack: |-
-    async TestContext.<anonymous> (file:///C:/Users/26648/fish_abil_ext/test/n05-store.test.mjs:107:5)
+    async TestContext.<anonymous> (<repo-root>/test/n05-store.test.mjs:107:5)
     async Test.run (node:internal/test_runner/test:1332:7)
     async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
   ...

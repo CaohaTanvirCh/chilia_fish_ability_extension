@@ -160,7 +160,7 @@ N05 重复运行同时覆盖：
 
 - Windows 原生，未使用 WSL；
 - Node.js `v24.18.0`，npm `11.16.0`；
-- 仓库：`C:\Users\26648\fish_abil_ext`；
+- 仓库：`<repo-root>`；
 - 测试日期：2026-11-10（Asia/Hong_Kong）。
 
 本轮未运行 `npm run test:integration`。改动仅涉及 Executor 的投影防御和 `dispatchQueued` 调用顺序，未修改 ACP transport、Store schema 或状态机；因此不新增真实 DSH 证据，也不把 Fake/Simulated 结果表述为真实 DSH 集成结果。
