@@ -104,13 +104,26 @@ TaskTargetIdentity:
   + controllerMembershipVersion
   + controllerDelegationId
   + controllerDelegationVersion
+  + if controllerDelegationId != null:
+      resolve Delegation(controllerDelegationId):
+        grantorPrincipalId/Version
+        grantorMembershipVersion
+        delegatePrincipalId/Version
+        delegateMembershipVersion
 
 SnapshotGrantTargetIdentity:
   grantId + origin=task-snapshot-controller
   + granteePrincipalId + granteePrincipalVersion + granteeMembershipVersion
   + sourceDelegationId + sourceDelegationVersion
+  + if sourceDelegationId != null:
+      resolve Delegation(sourceDelegationId):
+        grantorPrincipalId/Version
+        grantorMembershipVersion
+        delegatePrincipalId/Version
+        delegateMembershipVersion
 ```
 
+- Delegation binding 通过权威 Delegation 记录解析；id/version 缺失或不匹配必须 fail closed，不能猜当前记录。
 - 目标识别不能只看 Principal ID、当前 Membership、当前 Delegation 或“存在新授权”。
 - 旧 Task/Grant 的 identity 不变，就仍是旧 Fence 的目标。
 - 只有具体对象的权威 binding 已被显式操作改变，才能退出旧目标集。
@@ -189,15 +202,23 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 
 1. 从权威状态重新执行 scope 查询，覆盖全部 `TaskTargetIdentity`、`SnapshotGrantTargetIdentity`；Artifact owner 只做审计，不是物理目标。
 2. 每个目标 Task 已 `controlState=frozen`，或存在针对该具体 `taskId` 的权威 `transferController`，且同一事务写入新 binding、撤销该 Task 的旧 snapshot Grant（若有）。
-3. 每个目标 snapshot-controller Grant 已 `revokedAt`，或由针对该具体 `grantId`/`sourceDelegationId` 的显式 transfer/revoke 同事务撤销。
+3. 每个目标 snapshot-controller Grant 已 `revokedAt`，或由针对该具体 `grantId`/`sourceDelegationId` 的显式 transfer/revoke 同事务撤销；若 `sourceDelegationId != null`，必须解析并校验 Delegation grantor/delegate 两端 Principal/Membership binding，不能只检查 sourceDelegationVersion。
 4. Reconcile 未修改 `ownerPrincipalId`、未删除 Artifact。
 5. 扫描中发现的新对象若仍绑定旧 `sourceVersion`，必须纳入目标或 fail closed；不能跳过。
 6. 没有扫描错误、Store 错误、无法解析的引用。
-7. 所有批次、派生事件、完成记录同 commit；源级事件已在源 commit。
+7. **每个 batch commit 原子**（当前批次投影 + 派生事件 + 进度）；Fence completion commit 独立（completed + `authorization.reconciled` + 审计/进度）。不要求所有批次同 commit；源级事件已在源 commit。
 8. 多 Fence 重叠无未解决冲突；每个 Fence 只对自身 `sourceVersion/scope` 完成。
 9. 不能仅凭 `processedTaskIds`/`processedGrantIds` 判断完成。
 
 无法确认完整性时保持 `pending/reconciling/failed`，不得乐观标记 `completed`。`completed` 只表示当前 fence/sourceVersion/scope 的物化完成；`failed` 始终可重试。
+
+### 5.1 batch commit 与 completion commit
+
+- **撤权源 commit**：最终授权检查 + 源 status/version + Fence + authRev + 源级事件。
+- **Reconcile batch commit**：当前批次投影 + 派生事件 + 进度；每个批次独立原子，不要求所有批次同一事务。
+- **Fence completion commit**：重新扫描确认后，单独提交 completed/completedAt/`authorization.reconciled` + 审计/进度；失败保持可重试，不回滚已完成批次、不重复派生事件。
+
+**不得把“所有批次 + 完成记录”写成同一个 Store commit。**
 
 ---
 
@@ -209,6 +230,10 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 | 撤权 commit 后崩溃 | 有效 | 可能未物化 | 否 | 启动扫描/重试 |
 | 批次 commit 后崩溃 | 有效 | 部分完成 | 否 | 从权威/进度重算 |
 | 批次 commit 前崩溃 | 有效 | 未完成 | 否 | 重做批次 |
+| 第一批成功、第二批失败 | 有效 | 第一批已物化，第二批未完成 | 否 | 保留第一批；从第二批重试 |
+| 最后一批成功、completion commit 失败 | 有效 | 全部目标可能已物化、未标记 completed | 否 | retry completion；不回滚批次、不重复派生事件 |
+| completion 成功但响应丢失 | 有效 | completed | 是 | 重试返回 completed，不重复完成事件 |
+| 两个 worker 重复同一批次 | 有效 | 已记录进度 | 是（幂等） | 单 Store 串行；第二个跳过/重试安全 |
 | Store 写失败 | 有效 | 未完成 | 否 | `failed`，retry |
 | 扫描不完整 | 有效 | 不确定 | 否 | 保持 pending/failed |
 | 完成记录写失败 | 有效 | 已完成未标记 | 否 | retry 完成记录 |
@@ -245,8 +270,11 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 | `phase-2.1A.3-implementation-readiness.md` | 目标 identity、owner、事件、完成条件已同步；OD-11 DECIDED；OD-09 独立 | 一致 |
 | `phase-2.1A.4-revocation-model-closure.md` | Reconcile 条件更新仅 transfer；完成重扫；owner 审计；explicit/requester live ACL | 一致 |
 | `phase-2.1A.5-authority-fence-decision-closure.md` | 已按 P1-01..P1-05 修订；target identity；owner；源/派生事件；完成条件 | 一致 |
+| `phase-2.1A.7-delegation-membership-binding-audit.md` | 双端 Delegation binding；batch/completion 边界 | 一致 |
 
 未发现需要重新引入 AD-06/AD-12 同步物化的理由；未把 `stored controlState` 当作授权事实；未把 Artifact owner 与 Task controller 合并。
+
+Delegation grantor/delegate 双端 Membership binding 与 batch/completion commit 边界见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`。
 
 ---
 

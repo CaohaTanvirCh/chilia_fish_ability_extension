@@ -102,6 +102,7 @@ authorizationRevision + 1
 - 这些**权威记录/源级事件**必须全部成功或全部不生效；不能先撤源状态、后写 Fence，也不能先写 Fence、后撤源状态。
 - `Task.controlState`、`Task.controllerFrozenReason/At`、`ArtifactGrant.revokedAt` 等派生投影允许异步 Reconcile；它们不是授权事实来源。
 - `controller.frozen`、`artifact.grant_revoked`、`authorization.reconciled` 是 Reconcile 派生事件，可在批次中产生；不得要求撤权源事务枚举全部 Task/Grant。派生事件必须幂等，且不能成为授权失效的前置条件。
+- Reconcile batch commit 与 Fence completion commit 是独立原子边界；AD-12-R1 只要求源级撤权状态/Fence/authRev 同 commit，不要求所有批次/完成记录同一事务。
 - 撤权 commit 成功后，所有读、写、Replay、Artifact 读取、Event 读取和 Execution 控制都必须依据当前源 status/version + Fence 立即拒绝旧权限，即使投影仍是 `active`/`revokedAt=null`。
 - Reconcile 失败、崩溃、部分完成时，权威 Fence 仍有效；恢复后幂等重试，不得因投影未完成而回退授权。
 - 已经提交的 `dispatch_intent` 不因后续撤权被伪造为取消；运行中的 Execution 不自动取消，其结果/通知投递仍须按当前读取权限重新授权。

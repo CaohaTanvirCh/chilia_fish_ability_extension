@@ -429,6 +429,7 @@ AuthorityRevocationFence:
 - `effectiveAt` 对 expiry 可等于 `expiresAt`，允许过去时间；对 revoke 是 commit 时间。服务端时钟为准。
 - 源级撤权事件必须在撤权 commit；`controller.frozen`/`artifact.grant_revoked`/`authorization.reconciled` 是 Reconcile 派生事件，按 `fenceId+sourceVersion+targetId` 幂等，不能作为授权失效前置条件。
 - Reconcile target identity 使用具体对象 ID + authority binding；Principal enable、Membership re-add、new Delegation、new explicit Grant 不能单独让旧 Task/Grant 退出旧 Fence。
+- 委托目标必须解析 Delegation 的 grantor/delegate 两端：Principal fence 检查 grantorPrincipalVersion 与 delegatePrincipalVersion；Membership fence 检查 grantorMembershipVersion 与 delegateMembershipVersion；ArtifactGrant 的 sourceDelegationId 非 null 时同样按完整 binding 检查，不能只看 sourceDelegationVersion。
 
 ### 5.4 有效权限与失效来源
 
@@ -887,7 +888,7 @@ snapshot controller grant: controller（若非 owner/requester，scope=read）
 - 读取时只使用 Artifact 自身 owner/visibility/Grant，不查询当前 Task 角色。
 - 有效 Grant 必须满足：
   - 所有 origin：grantee Principal 当前有效、grantee Membership 当前 effective active、`revokedAt=null`、未过期；
-  - `origin=task-snapshot-controller`：grantee Principal/Membership version 与记录一致，且 `sourceDelegationId` 有效、`sourceDelegationVersion` 一致；无匹配 fence；
+  - `origin=task-snapshot-controller`：grantee Principal/Membership version 与记录一致，且 `sourceDelegationId` 有效、`sourceDelegationVersion` 一致；解析 source Delegation 的 grantor/delegate 两端 Principal/Membership binding 并校验，不能只检查 sourceDelegationVersion；无匹配 fence；
   - `origin=explicit`/`task-snapshot-requester`：不比较 grantee version；成员失效时立即 effective 无效，re-add 后按既有 Grant 恢复（除非显式 revoke）。
 - Membership/Principal 变化不会自动写 explicit/requester Grant 的 `revokedAt`；只有 `origin=task-snapshot-controller` 的 Grant 由 Fence 立即 effective 无效并异步物化 revokedAt。新建 explicit Grant 是不同 grantId，不替代旧 snapshot Grant 的撤销义务。
 - Artifact owner 变化不自动改变 Grant；Artifact owner 转移需显式操作。

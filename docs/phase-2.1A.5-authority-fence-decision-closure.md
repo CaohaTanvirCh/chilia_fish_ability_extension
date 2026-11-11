@@ -240,10 +240,10 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 
 1. 从权威状态重新执行 scope 查询，覆盖全部 **Task target identity**、**snapshot-controller Grant target identity**；Artifact owner 关系只用于完整性审计，不是物理物化目标。
 2. 每个目标 Task 已处于预期派生状态（`controlState=frozen`），**或**存在针对该具体 `taskId` 的权威 `transferController` 记录，且该记录在同一事务写入了新的 controller authority binding、撤销了该 Task 的旧 snapshot-controller Grant（若有）；仅有 Principal enable、Membership re-add、new delegation、new explicit Grant 不算。
-3. 每个目标 snapshot-controller Grant 已 `revokedAt`，**或**由针对该具体 `grantId`/`sourceDelegationId` 的显式 transfer/revoke 在同一事务撤销；new explicit Grant 是不同 grantId，不能替代旧 snapshot Grant 的撤销义务。
+3. 每个目标 snapshot-controller Grant 已 `revokedAt`，**或**由针对该具体 `grantId`/`sourceDelegationId` 的显式 transfer/revoke 在同一事务撤销；若 `sourceDelegationId != null`，必须解析该 Delegation 的 **grantor/delegate 两端** Principal/Membership binding 并与 Fence 匹配，不能只检查 `sourceDelegationVersion`。new explicit Grant 是不同 grantId，不能替代旧 snapshot Grant 的撤销义务。
 4. Artifact owner 的 `ownerPrincipalId` 未被 Reconcile 修改；owner 失效只走 live ACL + 显式 owner transfer，不能作为 Fence 的物化目标。
 5. 没有扫描错误、Store 错误、无法解析的引用；扫描中发现的新对象若仍绑定旧 `sourceVersion`，必须纳入目标或 fail closed，不能跳过。
-6. 所有批次、进度、派生事件和完成记录在同一 commit 成功；源级事件已在撤权 commit 成功。
+6. **每个 batch commit 原子**（当前批次投影 + 派生事件 + 进度）；**Fence completion commit 独立**（完成状态 + `authorization.reconciled` + 审计/进度）。不要求所有批次在同一 commit；源级事件已在撤权 commit。
 7. 多 fence 重叠时，没有未解决的冲突版本；每个 Fence 只对自身 `sourceVersion/scope` 完成。
 8. 不能仅凭 `processedTaskIds`/`processedGrantIds` 判断完成；进度不是完整性证明。
 
@@ -255,6 +255,12 @@ taskId
 + controllerMembershipVersion
 + controllerDelegationId
 + controllerDelegationVersion
++ if controllerDelegationId != null:
+    resolve Delegation(controllerDelegationId):
+      grantorPrincipalId/Version
+      grantorMembershipVersion
+      delegatePrincipalId/Version
+      delegateMembershipVersion
 ```
 
 **Snapshot-controller Grant target identity：**
@@ -263,12 +269,19 @@ taskId
 grantId + origin=task-snapshot-controller
 + granteePrincipalId + granteePrincipalVersion + granteeMembershipVersion
 + sourceDelegationId + sourceDelegationVersion
++ if sourceDelegationId != null:
+    resolve Delegation(sourceDelegationId):
+      grantorPrincipalId/Version
+      grantorMembershipVersion
+      delegatePrincipalId/Version
+      delegateMembershipVersion
 ```
 
 - 目标识别必须使用具体对象 ID 与 authority binding，不能只看 Principal ID、当前 Membership 或“存在新授权”。
+- Delegation binding 通过权威 Delegation 记录解析；delegationId/version 缺失或不匹配时必须 fail closed，不能凭当前记录猜测。
 - 旧 Task/Grant 的 binding 不会因 enable/re-add/new delegation/new explicit Grant 自动更新；因此它们仍是旧 Fence 的目标，直到显式 transfer/revoke 生效。
 - 无法确认完整性时：保持 `pending/reconciling/failed`，不得乐观标记 `completed`。
-- 完整目标 identity、操作影响矩阵与 owner/事件边界见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`。
+- 完整目标 identity、操作影响矩阵与 owner/事件边界见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`；Delegation 双端 Membership 匹配与 batch/completion 边界见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`。
 
 ### 3.5 重叠 Fence 与新授权
 
@@ -299,6 +312,10 @@ grantId + origin=task-snapshot-controller
 | 新撤权并发 | 两个 Fence 均有效 | 并集 | 各自独立完成 | 新 Fence 处理新版本 |
 | re-add/enable/new delegation | 旧 Fence 仍有效于旧版本 | 新对象不匹配；旧 Task 仍旧 binding | **否，直到旧 Task 物化 frozen** | 旧 Task 仍 frozen；新对象不受旧 Fence |
 | 新 explicit Grant | 旧 Fence 仍有效于旧 snapshot Grant | 新 Grant 独立；旧 Grant 仍可能未撤销 | **否，直到旧 snapshot Grant 物化 revoked** | 旧 Grant 撤销；新 Grant 按独立 ACL |
+| 第一批成功、第二批失败 | 有效 | 第一批已物化，第二批未完成 | 否 | 保留第一批；从第二批重试 |
+| 最后一批成功、completion commit 失败 | 有效 | 全部目标可能已物化，未标记 completed | 否 | 重试 completion；不回滚批次、不重复派生事件 |
+| completion 成功但响应丢失 | 有效 | completed | 是 | 重试返回 completed，不重复完成事件 |
+| 两个 worker 重复同一批次 | 有效 | 已记录进度 | 是（幂等） | 单 Store 串行；第二个跳过/重试安全 |
 | 投影损坏/不一致 | 有效 | 不可信 | 否 | 从权威重算，失败则 failed |
 
 ### 3.7 Reconcile 不变量
@@ -315,6 +332,10 @@ grantId + origin=task-snapshot-controller
 10. 新 explicit Grant 不免除旧 snapshot-controller Grant 的物理撤销义务。
 11. Artifact owner 不是 Fence 的物化目标；Reconcile 不得修改 ownerPrincipalId。
 12. 源级事件与派生事件分离；派生事件幂等且不能作为授权前置条件。
+13. Membership fence 对委托目标必须同时检查 grantorMembershipVersion 与 delegateMembershipVersion；不能把两者合并，也不能只检查 Task 的 controllerMembershipVersion。
+14. Principal fence 对委托目标必须同时检查 grantorPrincipalVersion 与 delegatePrincipalVersion。
+15. ArtifactGrant 的 sourceDelegationId 非 null 时，必须解析完整 Delegation binding（grantor/delegate Principal/Membership），不能只检查 sourceDelegationVersion。
+16. Reconcile batch commit 与 Fence completion commit 分离；不要求所有批次同一事务。
 
 ---
 
