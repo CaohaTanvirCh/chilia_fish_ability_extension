@@ -367,7 +367,31 @@ DelegationGrant:
 - Delegation 不替换 ArtifactGrant；`artifact:read` 只是上限之一（AD-06）。
 - 撤销/过期：所有受影响 Task `controlState=frozen`；running Execution 继续；queued 不自动 dispatch；snapshot controller ArtifactGrant 撤销；不追溯已接受 dispatch_intent（AD-12/AD-13 语义）。
 
-### 5.3 有效权限
+### 5.3 DelegationRevocationFence
+
+```text
+DelegationRevocationFence:
+  fenceId
+  delegationId
+  workspaceId
+  revokedAt
+  authorizationRevision
+  actorPrincipalId
+  reason
+  status                 pending | reconciling | completed | failed
+  processedTaskIds       string[]
+  processedGrantIds      string[]
+  lastError
+  completedAt
+```
+
+- Fence 是撤权的授权权威输入；stored `Task.controlState`/`ArtifactGrant.revokedAt` 是可滞后的物化投影。
+- `effectiveControlState` 和 effective ArtifactGrant 必须检查 fence/source delegation。
+- Reconcile 只物化已生效的撤权，不决定撤权生效时间。
+- Fence 提交后，新命令立即拒绝；不等待 reconcile。
+- 过期也可复用 fence/reconcile 语义；`revokedAt` 与 `expiredAt` 通过 reason 区分。
+
+### 5.4 有效权限
 
 ```text
 effectivePermission(actor, op, resource) =
@@ -448,6 +472,20 @@ IntegrityAlert:
   acknowledgedByPrincipalId | null
   note | null
 ```
+
+**`controlState` 是 stored/materialized cache，不是唯一权威。** API 的 `TaskView.controlState` 和所有 Store 写授权使用 effective：
+
+```text
+effectiveControlState =
+  frozen if controllerDelegationId 指向 revoked/expired/fenced delegation
+  frozen if controllerPrincipalId disabled/deleted
+  frozen if controllerFrozenAt/fence 存在且未解除
+  else stored controlState
+```
+
+- `controlStateStored` 可在内部保留用于诊断；`controlState` 对外返回 effective。
+- 撤权 fence 先于 materialized field 生效；详见 Store 2.5。
+- 不能把 materialized `active` 当作“仍可控制”。
 
 **不把 `executionSummary` 作为权威持久字段。** API 派生：
 
@@ -750,6 +788,7 @@ ArtifactGrant:
   grantedByPrincipalId       PrincipalId
   origin                     explicit | task-snapshot-requester |
                              task-snapshot-controller
+  sourceDelegationId         DelegationId | null   // snapshot-controller 时记录
   createdAt
   expiresAt                  Timestamp | null
   revokedAt / revokedReason
@@ -939,8 +978,8 @@ Store v3 必须验证：
 7. Execution 的 `taskId`/`workspaceId`/`bindingId` 归属一致；终态不可变。
 8. 一个 SessionBinding 只属于一个 Execution；同一 Session 不能跨 Task 并行。
 9. 同一 Task 的多个 active Execution 必须满足 Workspace 隔离/租约规则。
-10. `controlState=frozen` 的 Task 不能创建/控制 Execution。
-11. Artifact owner/grantee 是 effective active 成员；Artifact reference 归属正确。
+10. `effectiveControlState=frozen` 的 Task 不能创建/控制 Execution；stored `controlState` 不能覆盖 fence。
+11. Artifact owner/grantee 是 effective active 成员；Artifact reference 归属正确；`sourceDelegationId` 失效时 grant 立即无效。
 12. `WorkspaceWriteLease` 最多一个 held（mutex）；与 Execution dispatch/终态/清理关联。
 13. Event 关联完整；事件 scope/audience 与 Workspace 一致。
 14. `authorizationRevision` 单调递增；所有影响授权的变更递增。

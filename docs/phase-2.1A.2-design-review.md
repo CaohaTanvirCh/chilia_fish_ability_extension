@@ -27,7 +27,12 @@ Contracts v3、Store v3、API v3 的设计足以作为后续实现拆分输入�
 
 1. 当前 v2 Store/API 没有授权提交、Workspace/Principal/Artifact 和多 Execution 语义；
 2. 设计中的多个关键能力（Windows handle-relative guard、ACP exactly-once、物理 Artifact 安全）尚未实现；
-3. 仍有需要用户确认的 Open Decisions（见第 7 节）。
+3. OD-09（缺失 baseline 文档）仍需用户决定；其余 OD 已在 Phase 2.1A.3 收敛（见 9.3）。
+
+Phase 2.1A.3 已完成两项 P1 收敛：
+
+- Replay 顺序改为“先当前授权、再 RequestRecord、最后 revision”；
+- Delegation 撤权使用 fence 作为即时授权权威，reconcile 只物化派生状态。
 
 本轮未发现 AD-01 至 AD-14 或 IW-01 至 IW-11 的未解释语义冲突；发现的是实现门槛、容量/路径/迁移边界和状态投影选择。
 
@@ -36,7 +41,7 @@ Contracts v3、Store v3、API v3 的设计足以作为后续实现拆分输入�
 | 级别 | 数量 | 说明 |
 |---|---:|---|
 | P0 | 2 个实现门槛 | v2 无法承载 v3；Workspace 文件边界不是 OS 强制隔离 |
-| P1 | 7 | 批量撤权容量、Store 容量、路径 native helper、迁移 manual recovery、ACP 不可恢复边界、Artifact 物理存储/保留、Delegation 到期物化 |
+| P1 | 8 | Replay 实现、Fence/reconcile 实现、Store 容量、路径 native helper、迁移 manual recovery、ACP 不可恢复边界、Artifact 物理存储/保留、Delegation 到期物化 |
 | P2 | 7 | API 错误/分页/命名、Event schema、Task title/description、cancel 投影、Store 容量参数、Message 延后、Artifact 跨 Workspace 接口 |
 
 > P0 是“不能把它当成已实现能力”，不是本设计文档自身矛盾。
@@ -189,14 +194,14 @@ Contracts v3、Store v3、API v3 的设计足以作为后续实现拆分输入�
 
 ### 5.2 批量撤权
 
-设计默认在同一 commit 冻结所有受影响 Task；如果集合超过容量，提出 `revocationFence + reconcile` 方案：
+**A3-P1-02 已收敛设计。** 撤销 commit 同时写 `revoked + DelegationRevocationFence + authorizationRevision`；fence 立即作为授权权威输入，所有读写都拒绝依赖 revoked grant 的操作。`Task.controlState`/`ArtifactGrant.revokedAt` 是可滞后的物化投影，reconcile 只物化已生效的拒绝。
 
-- `revoked` + authRevision 先原子生效；
-- 所有授权检查先拒绝；
-- 后续物化 Task frozen/ArtifactGrant；
-- materialization 完成前返回 `AUTHORIZATION_RECONCILING`。
+- 不再把“枚举所有 Task 并在同一 commit 冻结”作为唯一方案；
+- `effectiveControlState`/effective ArtifactGrant 必须先检查 fence；
+- `AUTHORIZATION_RECONCILING` 只表示物化未完成，不表示旧权限仍可用；
+- AD-08 的“立即失效”由 fence 保证；“持久化 frozen 字段”允许滞后。
 
-这与 AD-12 的“授权检查在 commit 内”一致，但和 AD-08 的“同一事务冻结 Task”存在实现/容量张力。**P1，需要用户确认是否接受 fence/reconcile，还是强制单事务容量上限。**
+**结论：设计层 DECIDED；实现层仍需 fence 持久化、reconcile 幂等和 crash recovery 测试，A3-P1-02 实现验收未关闭。**
 
 ### 5.3 过期
 
@@ -263,7 +268,7 @@ Contracts v3、Store v3、API v3 的设计足以作为后续实现拆分输入�
 
 ## 7. Open Decisions
 
-以下问题不能由本轮设计单方面决定；实现前必须确认：
+以下为原始问题清单；Phase 2.1A.3 的逐项状态见 9.3。除 OD-09 外，本轮已完成选择/延后/关闭。
 
 | ID | 问题 | 当前建议 | 影响 |
 |---|---|---|---|
@@ -271,12 +276,14 @@ Contracts v3、Store v3、API v3 的设计足以作为后续实现拆分输入�
 | OD-02 | `cancelTask` 是否允许 `goalStatus=cancelled` 与清理中 Execution 并存 | 允许；不伪造 Execution 终态 | 若要求等全部终态才 cancelled，API 语义需改 |
 | OD-03 | `awaiting_input` 是否进入 v3 | 不进入；Phase 2.3 InputRequest | 影响 Execution 状态机/ACP 能力 |
 | OD-04 | `Task.result` 兼容投影是否保留 | 保留只读投影；权威仍是 selected Execution | 影响 v2 客户端兼容 |
-| OD-05 | 批量撤权是否接受 fence/reconcile | 建议先确认容量上限；若接受 fence，需 AD 修订 | AD-08/AD-12 的“同一事务冻结”与容量冲突 |
+| OD-05 | 批量撤权是否接受 fence/reconcile | **已选择 fence**；fence 即时拒绝，reconcile 只物化 | AD-08 的 stored controlState 语义需按 effective 解释；见 9.2/9.3 |
 | OD-06 | Store v3 是否继续 JSON 快照及容量参数 | 继续 `state-v3.json`；参数待容量测试 | 高容量/写放大风险 |
 | OD-07 | Workspace 是否需要 `status=quarantined` 单枚举 | 保持 `status` + `quarantineState` 正交 | API/Contracts 类型选择 |
 | OD-08 | Artifact 物理 purge 的保留期/审批 | v3 不开放普通 API；离线流程 | 合规/容量 |
 | OD-09 | 缺失 `phase-2.0-architecture-baseline.md` | 使用冻结的 2.0.1/2.0.2/2.0.3；补源文档 | 审计可追溯性 |
 | OD-10 | 本设计包含 Task/Artifact v3 详细模型，是否视为 Phase 2.1B 设计启动 | 仅设计输入；Phase 2.1B 实现仍需单独启动 | 阶段边界 |
+
+**AD-08 materialization 解释：** fence 提交后 effective controlState 立即 frozen；stored `Task.controlState` 是可滞后的物化 cache。授权/读取/写入都不能依赖 stored active。若把 AD-08 解释为“stored 字段必须在同一 commit 全部冻结”，则不能采用 fence，必须回到单事务容量上限；这是 OD-05 的明确取舍。
 
 ---
 
@@ -298,13 +305,14 @@ Contracts v3、Store v3、API v3 的设计足以作为后续实现拆分输入�
 
 | ID | 问题 | 影响 | 下一步 |
 |---|---|---|---|
-| P1-01 | 批量撤权容量/fence | 可能违反 AD-08 同事务冻结或触发容量失败 | 确认 OD-05；容量测试/事务拆分策略 |
-| P1-02 | Store v3 容量/JSON 写放大 | 32 MiB 不足；v3 集合/事件/历史增长 | 容量测试；冻结 limits/reserve |
-| P1-03 | Windows native path guard | 无 handle-relative/no-follow；TOCTOU 未消除 | 设计/实现 native helper 或 OS sandbox |
-| P1-04 | 迁移 manual recovery | v2 数据可能不可映射；不能猜 owner/workspace | 迁移报告/隔离流程/回滚演练 |
-| P1-05 | ACP 不可恢复边界 | 无 replay/turnId/exactly-once；unknown 可能长期 | 明确降级/人工恢复；不承诺关闭 |
-| P1-06 | Artifact 存储/物理保留 | storageRef/ACL 已设计，但无后端/安全删除 | Phase 2.1B 存储设计；purge 条件 |
-| P1-07 | Delegation 到期物化 | 逻辑拒绝/持久化 frozen 之间需要 reconciler/启动扫描 | 实现 scheduler；测试“到期但未物化”写路径 |
+| A3-P1-01 | Replay 顺序/resultSnapshot | 设计已决定；实现需防重复执行/旧 revision 误失败 | 按 9.1 实现/验收；崩溃/并发测试 |
+| A3-P1-02 | Revocation fence/reconcile | 设计已决定；实现需证明即时拒绝、幂等、crash recovery | 按 9.2 实现/验收；不再等待 OD-05 |
+| P1-03 | Store v3 容量/JSON 写放大 | 32 MiB 不足；v3 集合/事件/历史增长 | 容量测试；冻结 limits/reserve |
+| P1-04 | Windows native path guard | 无 handle-relative/no-follow；TOCTOU 未消除 | 设计/实现 native helper 或 OS sandbox |
+| P1-05 | 迁移 manual recovery | v2 数据可能不可映射；不能猜 owner/workspace | 迁移报告/隔离流程/回滚演练 |
+| P1-06 | ACP 不可恢复边界 | 无 replay/turnId/exactly-once；unknown 可能长期 | 明确降级/人工恢复；不承诺关闭 |
+| P1-07 | Artifact 存储/物理保留 | storageRef/ACL 已设计，但无后端/安全删除 | Phase 2.1B 存储设计；purge 条件 |
+| P1-08 | Delegation 到期物化 | 逻辑拒绝/持久化 frozen 之间需要 reconciler/启动扫描 | 实现 scheduler；测试“到期但未物化”写路径 |
 
 ### 8.3 P2
 
@@ -314,13 +322,102 @@ Contracts v3、Store v3、API v3 的设计足以作为后续实现拆分输入�
 | P2-02 | Event type/schemaVersion 细节 | 统一 event schema registry |
 | P2-03 | `Task.title/description` 可选语义 | 确认产品需求；objective 为权威 |
 | P2-04 | `dispatching/cancelling` 投影字段名 | 与 OD-01 一起冻结 |
-| P2-05 | Store 容量参数 | 与 P1-02 一起冻结 |
+| P2-05 | Store 容量参数 | 与 P1-03 一起冻结 |
 | P2-06 | Message/ACK 延后 Phase 2.2 | 不把 Event 当 Message |
 | P2-07 | 跨 Workspace Artifact 分享 | 未来独立 AD/接口，不在 v3 开放 |
 
 ---
 
-## 9. 实现阶段依赖与建议顺序
+## 9. Phase 2.1A.3 Closure
+
+> 任务书中的“P1-01 replay”与“P1-02 revocation fence”在本 Review 中记为 **A3-P1-01** / **A3-P1-02**，与后续 P1-03 至 P1-08（容量/路径/迁移/ACP/Artifact/到期）区分。两者最终都归入本节的 closure 表。
+
+### 9.1 A3-P1-01：Replay 顺序
+
+**DECIDED。** Store 采用：
+
+```text
+lock
+ -> load current auth state
+ -> recompute effective authorization
+ -> resolve request scope
+ -> lookup RequestRecord
+ -> if exists: inputHash check + current auth -> resultSnapshot / conflict / revoked
+ -> if not exists: expectedRevision + expectedAuthorizationRevision
+ -> state preconditions -> changes + Request + Events -> persist
+```
+
+关键修正：
+
+- Replay **不检查** expectedRevision/expectedAuthorizationRevision；
+- 但必须先按当前 Principal/Membership/Delegation/Task/Artifact ACL 重新授权；
+- Replay 返回 `resultSnapshot`，不重新执行，不触发 ACP；
+- 相同 scope + 不同 inputHash 冲突；
+- 相同 clientRequestKey + 不同 operation 是不同 scope；
+- 并发相同 scope 由单 Store 串行化，只创建一个 RequestRecord。
+
+| 场景 | 结果 |
+|---|---|
+| 原操作已提交，响应丢失，客户端带旧 revision 重试 | 返回原 resultSnapshot，`replayed=true` |
+| 原操作后无关 Task 被修改 | 同上；不受 Store revision 变化影响 |
+| 原操作后 Membership 被撤销 | `AUTHORIZATION_REVOKED`，不返回旧结果 |
+| 原操作后 Delegation 被撤销 | 同上 |
+| 原操作后 Artifact ACL 被修改 | 当前 ACL 不允许则拒绝；不绕过 ArtifactGrant |
+| 同 key 不同 operation | scope 不同，不跨 operation replay |
+| 两个并发同 scope 请求 | 串行化；一个首次执行，另一个 replay |
+| dispatch_intent 已提交后 Hub 崩溃 | 只返回已接受结果；不再次 prompt；远端是否执行仍 unknown |
+
+### 9.2 A3-P1-02：Revocation Fence / Reconcile
+
+**DECIDED（设计层），实现验证未关闭。** 撤销提交写 `DelegationRevocationFence`；fence 立即作为授权权威，reconcile 只物化：
+
+| 场景 | 行为 |
+|---|---|
+| Fence 已提交，reconcile 未开始 | 新命令/读取立即按 fence 拒绝；TaskView 显示 effective frozen |
+| Reconcile 只处理部分资源 | 未物化资源仍按 fence 拒绝；不能因部分物化放行 |
+| Hub 重启 | 启动扫描 pending/reconciling fence；从 processed 集合继续；不自动释放租约 |
+| 完成记录持久化失败 | fence 保持 pending；重试；不变更即时拒绝 |
+| 同一 Delegation 重复撤销 | 返回已有 fence；不产生第二套语义 |
+| Reconcile 期间 Controller 转移 | 条件更新；已转移 Task 不被旧 fence 覆盖；新 controller 保留 |
+| Reconcile 期间 Principal disable | 新 fence 叠加；取并集；不自动 unfreeze |
+
+- `Task.controlState`/`ArtifactGrant.revokedAt` 是 materialized cache；
+- `effectiveControlState`/effective ArtifactGrant 必须看 fence/source delegation；
+- `AUTHORIZATION_RECONCILING` 不是“旧权限仍有效”；
+- running Execution 继续，不伪造 cancel；
+- 不释放 Lease、不自动创建新 Execution。
+
+### 9.3 OD-01 至 OD-10
+
+| ID | 状态 | 决策/理由 |
+|---|---|---|
+| OD-01 `dispatching/cancelling` | **DECIDED** | 只做 API 投影；持久化仍用 AD-07 七状态 + submission + cancel 字段。`succeeded` 是 `completed` 别名。 |
+| OD-02 cancelled + running cleanup | **DECIDED** | `cancelTask` 立即写目标取消 + 全部 cancel requests；Execution 保留真实状态；禁止新 Execution；不伪造 terminal。 |
+| OD-03 `awaiting_input` | **DEFERRED** | 继续留到 Phase 2.3；v3 Execution 保持 `running`，不假设 ACP 交互输入能力。 |
+| OD-04 Artifact 物理删除 | **DECIDED** | v3 只 soft-delete；物理 purge 仅离线/内部，需 retention、无引用、无有效 Grant；不开放普通 API。 |
+| OD-05 批量撤权 | **DECIDED** | 采用 fence + reconcile；即时授权效果由 fence 保证，物化可滞后；与 9.2 一致。 |
+| OD-06 Store 容量/JSON | **DECIDED** | 继续 `state-v3.json`；初始容量 256 MiB/200k events/10k tasks/50k executions/20k artifacts（provisional）；实现前必须做容量/写放大基准，超过则拒绝新工作。 |
+| OD-07 Workspace status/quarantine | **DECIDED** | 保持 `status=active/archived/deleted` + `quarantineState=normal/quarantined`；API 派生 `WorkspaceAccessState`，不混成单一业务状态。 |
+| OD-08 Artifact purge 保留期/审批 | **DEFERRED** | 具体保留期/审批属于 Phase 2.1B 存储设计；v3 只冻结“不可通过普通 API 直接物理删除”。 |
+| OD-09 缺失 baseline 文档 | **NEEDS_USER_DECISION** | `docs/phase-2.0-architecture-baseline.md` 不存在；当前使用冻结的 2.0.1/2.0.2/2.0.3 与 baseline review。需要用户提供原文，或确认以冻结文档为唯一基线。 |
+| OD-10 2.1B 设计边界 | **DECIDED** | 本文件中的 Task/Artifact v3 是设计输入；Phase 2.1B 实现仍需单独启动，不在本轮开始。 |
+
+### 9.4 v3 实现准入结论
+
+| 领域 | 当前状态 | 准入条件 |
+|---|---|---|
+| Contracts | 设计完整，未实现 | 类型/字段/引用/状态机通过独立评审；错误码冻结 |
+| Store | 设计完整，未实现 | `commitAuthorized`、replay 顺序、fence、crash recovery 测试 |
+| API | 设计完整，未实现 | typed commands、读过滤、错误语义、外部副作用边界 |
+| Migration | 设计完整，未实现 | 显式 workspace/owner/root、manual recovery、备份回滚 |
+| Windows | cooperative 设计 | native helper/OS sandbox 或明确接受 cooperative；quarantine 测试 |
+| ACP | 边界明确 | 不承诺 exactly-once；unknown/cancel/late notification 测试 |
+| Identity | 设计完整 | Principal/Workspace/Membership/Delegation 事务与授权测试 |
+| Phase 2.1B | 未启动 | 单独批准；不得因本设计通过而自动开始 |
+
+**结论：v3 设计可冻结为实现输入，但实现准入为 CONDITIONAL；P0/P1/OD-09 未关闭前不得开始实现。**
+
+## 10. 实现阶段依赖与建议顺序
 
 本设计通过后，建议按以下顺序拆分实现；不开始 Phase 2.1B 实现，除非单独批准。
 
@@ -345,7 +442,7 @@ Contracts v3、Store v3、API v3 的设计足以作为后续实现拆分输入�
 
 ---
 
-## 10. 最终判断
+## 11. 最终判断
 
 Contracts v3/Store v3/API v3 设计在以下意义上通过：
 
@@ -362,7 +459,7 @@ Contracts v3/Store v3/API v3 设计在以下意义上通过：
 
 - 当前 v2 不能承载；
 - P0/P1 尚未关闭；
-- Open Decisions 未确认；
+- OD-09（缺失 baseline 文档）未确认；
 - 没有代码/测试/真实多用户/路径攻击证据；
 - Phase 2.1B 实现仍未启动。
 
