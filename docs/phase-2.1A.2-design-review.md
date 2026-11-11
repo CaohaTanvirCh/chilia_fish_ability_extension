@@ -300,7 +300,7 @@ Phase 2.1A.5 进一步：
 | OD-09 | 缺失 `phase-2.0-architecture-baseline.md` | 使用冻结的 2.0.1/2.0.2/2.0.3；补源文档 | 审计可追溯性 |
 | OD-10 | 本设计包含 Task/Artifact v3 详细模型，是否视为 Phase 2.1B 设计启动 | 仅设计输入；Phase 2.1B 实现仍需单独启动 | 阶段边界 |
 
-**AD-08 materialization 解释：** fence 提交后 effective controlState 立即 frozen；stored `Task.controlState` 是可滞后的物化 cache。授权/读取/写入都不能依赖 stored active。若把 AD-08 解释为“stored 字段必须在同一 commit 全部冻结”，则不能采用 fence，必须回到单事务容量上限；这是 OD-05 的明确取舍。
+**AD-08 materialization 解释：** fence 提交后 effective controlState 立即 frozen；stored `Task.controlState` 是可滞后的物化 cache。授权/读取/写入都不能依赖 stored active。AD-12-R1 已明确“同一 commit”只要求权威状态/Fence/authRev，不要求同步所有派生字段；因此 staged lane 可以保留。若有人坚持 stored 字段必须在同一 commit 全部冻结，则会与 AD-12-R1 冲突，但该解释未被采纳。
 
 ---
 
@@ -412,6 +412,9 @@ lock
 - `Task.controlState`/snapshot-controller `ArtifactGrant.revokedAt` 是 materialized cache；
 - `effectiveControlState`/effective ArtifactGrant 必须看 authority version + fence；
 - Reconcile 扫描必须覆盖 grantee、Delegation grantor、Delegation delegate、controller 和 Artifact owner 关系；不能只扫描直接 grantee；
+- 目标识别必须基于具体对象 ID + authority binding；re-add/enable/new delegation/new explicit grant 不能让旧目标跳过；
+- Artifact owner 只做 live ACL/审计，不是 Fence 物化目标；Reconcile 不得写 ownerPrincipalId；
+- 源级撤权事件与派生 `controller.frozen`/`artifact.grant_revoked` 分离；派生事件幂等且不是授权前置；
 - 完成必须从权威状态重新扫描，不能仅凭 processed ids 乐观标记；
 - `AUTHORIZATION_RECONCILING` 不是“旧权限仍有效”；
 - running Execution 继续，不伪造 cancel；
@@ -479,7 +482,7 @@ User U 直接控制 Task T
 
 **Reconcile 完整性：** Principal/Membership/Delegation fence 的扫描必须覆盖 grantee、Delegation grantor、Delegation delegate、controller 及 Artifact owner 的既有独立处理；不得只扫描直接 grantee。A5 第 3 节已补齐 delegate 遗漏和完成条件。
 
-详细模型、十二场景、reconcile/replay 审计与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 与 `docs/phase-2.1A.5-authority-fence-decision-closure.md`。
+详细模型、十二场景、reconcile/replay 审计与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 与 `docs/phase-2.1A.5-authority-fence-decision-closure.md`；target identity/事件/owner 边界见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`。
 
 ## 10. 实现阶段依赖与建议顺序
 

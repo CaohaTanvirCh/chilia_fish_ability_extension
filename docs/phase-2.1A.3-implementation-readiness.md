@@ -37,6 +37,7 @@
 - Artifact 创建时 ACL 快照与独立 Grant/Reference；
 - Store 单所有者、`commitAuthorized`、Replay 顺序、Event 全局 sequence；
 - 撤权后用 effective control 立即拒绝，reconcile 只物化派生投影；
+- Reconcile target identity、owner 边界、源/派生事件与完成条件（A6-P1-01..04）；
 - v2→v3 不猜测 owner/workspace/Artifact/Delegation 的迁移边界；
 - Windows root 的 cooperative 边界和 quarantine 行为。
 
@@ -135,7 +136,10 @@ Principal/Membership/Delegation 状态 + authority version
 - Controller transfer 与 fence 竞态：条件更新，新 controller 不被旧 fence 覆盖。
 - 多来源撤权：取并集，一个 fence 完成不清除另一个；不自动 unfreeze。
 - `enablePrincipal` 必须等待 principal fence 完成，避免 Delegation 复活。
-- Reconcile 完整性、delegate 覆盖和完成条件见 `docs/phase-2.1A.5-authority-fence-decision-closure.md` 第 3 节。
+- Reconcile 完整性、delegate 覆盖和完成条件见 `docs/phase-2.1A.5-authority-fence-decision-closure.md` 第 3 节；target identity/操作影响矩阵见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`。
+- 目标识别必须用具体 Task/Grant ID + authority binding；re-add/enable/new delegation/new explicit Grant 不能让旧目标跳过；新 explicit Grant 不免除旧 snapshot Grant 的撤销。
+- Artifact owner 只做 live ACL/审计，不是 Fence 物化目标；Reconcile 不得写 ownerPrincipalId。
+- 源级撤权事件在源 commit；`controller.frozen`/`artifact.grant_revoked` 是派生事件，幂等且不是授权前置。
 
 详细见 `docs/phase-2.1A.4-revocation-model-closure.md` 与 A5。
 

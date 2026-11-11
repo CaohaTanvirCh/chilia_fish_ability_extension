@@ -218,7 +218,7 @@ Principal:
 7. 不取消已经在运行的 Execution；不伪造 `cancelled`；
 8. 不自动转移 Task owner、Workspace owner 或 Artifact owner。
 
-Membership 的 **stored state 不变**（仍为 `active`），但 `Principal.status` 使其 **effective state 变为 suspended**；重新启用后，只有本来就 `stored=active` 的 Membership 自动恢复 effective 权限。显式 `revoked` 的 Membership 不会被重新启用复活（详见 IW-11 / 19.3）。Delegation 不自动恢复，Controller 也不会因 Principal enable 自动 unfreeze；必须显式转移/恢复。
+Membership 的 **stored state 不变**（仍为 `active`），但 `Principal.status` 使其 **effective state 变为 suspended**；重新启用后，只有本来就 `stored=active` 的 Membership 自动恢复 effective 权限。显式 `revoked` 的 Membership 不会被重新启用复活（详见 IW-11 / 19.3）。Delegation 不自动恢复，Controller 也不会因 Principal enable 自动 unfreeze；必须显式 `transferController`（v3 不暴露同一 controller 的 unfreeze）。
 
 ### 4.5 删除语义
 

@@ -427,6 +427,8 @@ AuthorityRevocationFence:
 - 同一 sourceVersion 重复撤销返回已有 fence；若源已处于同一终态，返回该 sourceKey 的现有 fence，不按 commit 后新 version 再建。只有 re-add/enable 后再次失效才创建新 version 的 fence。
 - `status=failed` 不是终态；retry 扫描包含 `pending/reconciling/failed`。完成记录失败不改变即时拒绝。
 - `effectiveAt` 对 expiry 可等于 `expiresAt`，允许过去时间；对 revoke 是 commit 时间。服务端时钟为准。
+- 源级撤权事件必须在撤权 commit；`controller.frozen`/`artifact.grant_revoked`/`authorization.reconciled` 是 Reconcile 派生事件，按 `fenceId+sourceVersion+targetId` 幂等，不能作为授权失效前置条件。
+- Reconcile target identity 使用具体对象 ID + authority binding；Principal enable、Membership re-add、new Delegation、new explicit Grant 不能单独让旧 Task/Grant 退出旧 Fence。
 
 ### 5.4 有效权限与失效来源
 
@@ -887,10 +889,10 @@ snapshot controller grant: controller（若非 owner/requester，scope=read）
   - 所有 origin：grantee Principal 当前有效、grantee Membership 当前 effective active、`revokedAt=null`、未过期；
   - `origin=task-snapshot-controller`：grantee Principal/Membership version 与记录一致，且 `sourceDelegationId` 有效、`sourceDelegationVersion` 一致；无匹配 fence；
   - `origin=explicit`/`task-snapshot-requester`：不比较 grantee version；成员失效时立即 effective 无效，re-add 后按既有 Grant 恢复（除非显式 revoke）。
-- Membership/Principal 变化不会自动写 explicit/requester Grant 的 `revokedAt`；只有 `origin=task-snapshot-controller` 的 Grant 由 Fence 立即 effective 无效并异步物化 revokedAt。
+- Membership/Principal 变化不会自动写 explicit/requester Grant 的 `revokedAt`；只有 `origin=task-snapshot-controller` 的 Grant 由 Fence 立即 effective 无效并异步物化 revokedAt。新建 explicit Grant 是不同 grantId，不替代旧 snapshot Grant 的撤销义务。
 - Artifact owner 变化不自动改变 Grant；Artifact owner 转移需显式操作。
 - Controller 转移/冻结同步只针对 `origin=task-snapshot-controller` 的 Grant；冻结时该 Grant 由 Fence/authority version 立即 effective 无效，`revokedAt` 可异步物化；显式 transfer 仍在同一事务撤销旧 Grant/创建新 Grant（AD-06-R1）。
-- Task owner 转移不改变 Artifact owner；需要显式 transfer。
+- Task owner 转移不改变 Artifact owner；需要显式 transfer。Reconcile 不得修改 `Artifact.ownerPrincipalId`；owner 关系只用于完整性审计，不是 Fence 物化目标。
 - Task visibility 变化不改变 Artifact；发布审核事件。
 
 ### 8.3 Artifact 读取/写入

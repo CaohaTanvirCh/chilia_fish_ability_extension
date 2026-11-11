@@ -74,7 +74,7 @@ AuthorityRevocationFence:
   sourceKind, sourceKey, sourceVersion=失效前版本,
   scope, cause, effectiveAt, authorizationRevision
 authorizationRevision + 1
-对应审计事件（principal/membership/delegation/controller/artifact 相关）
+源级撤权审计事件（principal/membership/delegation/authorization）
 ```
 
 这些权威记录必须全部成功或全部不生效。不能：
@@ -84,18 +84,27 @@ authorizationRevision + 1
 - 把一个撤权拆成多个独立 Store commit；
 - 先返回“已撤权”再补 Fence。
 
-### 1.2 不要求同 commit 写入的派生投影
+**源级事件**是撤权事实的一部分，必须在同一 commit；它们不得隐含要求同步枚举全部 Task/ArtifactGrant。per-Task `controller.frozen`、per-Grant `artifact.grant_revoked` 属于派生事件，见 1.2/3.3。
 
-以下属于派生投影，允许异步 Reconcile：
+### 1.2 不要求同 commit 写入的派生投影与派生事件
+
+以下属于派生投影/派生事件，允许异步 Reconcile：
 
 ```text
 Task.controlState = frozen
 Task.controllerFrozenReason / controllerFrozenAt
 ArtifactGrant.revokedAt / revokedReason
 fence.processedTaskIds / processedGrantIds
+controller.frozen（per-Task 物化事件）
+artifact.grant_revoked（per-Grant 物化事件）
+authorization.reconciled（Fence 完成事件）
 ```
 
 它们不是授权事实来源。即使投影仍是 `active`/`revokedAt=null`，撤权 commit 成功后也必须拒绝旧权限。
+
+- 派生事件必须幂等：同一 fence/sourceVersion/targetId 只追加一次；重复批次跳过。
+- 派生事件不能成为授权失效的前置条件；授权失效在源 commit 已生效。
+- Event 查询仍必须按当前授权重新过滤；派生事件不是读取凭证。
 
 ### 1.3 授权判断必须覆盖的入口
 
@@ -164,7 +173,7 @@ AD-06-R1 只把**撤权驱动的 Controller 冻结/snapshot Grant 撤销**改为
 
 - Artifact 创建时快照 owner/visibility/requester/controller Grant 仍在同一事务物化。
 - 显式 Grant 仍由 Artifact owner 或 Workspace Owner/Admin 管理并审计。
-- Artifact owner 与 Task controller 是不同所有权；Controller 冻结不自动转移 Artifact owner。
+- Artifact owner 与 Task controller 是不同所有权；Controller 冻结不自动转移 Artifact owner。Reconcile 不得修改 `ownerPrincipalId`；owner 关系只用于完整性审计。
 - Artifact owner/grantee 失去 Workspace 成员资格时，访问立即失败；Owner/Admin 可显式转移/处置。
 - Workspace Owner/Admin 的审计读取仍按既有权限，不受旧 Controller 影响。
 - Artifact 的物理存储/保留仍是 Phase 2.1B 范围；本次不改变。
@@ -190,10 +199,10 @@ AD-06-R1 只把**撤权驱动的 Controller 冻结/snapshot Grant 撤销**改为
 
 Reconcile 必须从权威关系出发，而不是只扫描“直接 grantee”。
 
-| Fence 来源 | Task 目标 | ArtifactGrant effective 检查 | 物理物化 `revokedAt` | Artifact owner |
+| Fence 来源 | Task 目标 | ArtifactGrant effective 检查 | 物理物化 `revokedAt` | Artifact owner（仅审计） |
 |---|---|---|---|---|
-| Principal global | controller=principal；controller delegation 的 grantor/delegate=principal | grantee=principal；source delegation 的 grantor=principal；source delegation 的 delegate=principal | 仅 `origin=task-snapshot-controller` 且 source delegation/controller authority 匹配 | owner=principal 时按独立 owner 规则处理，不自动转移 |
-| Membership workspace | controller=principal；controller delegation 的 grantor=principal；delegate=principal | grantee=principal；source delegation 的 grantor=principal；delegate=principal | 仅 `origin=task-snapshot-controller` 且 source delegation/controller authority 匹配 | owner=principal 时按独立 owner 规则处理 |
+| Principal global | controller=principal；controller delegation 的 grantor/delegate=principal | grantee=principal；source delegation 的 grantor=principal；source delegation 的 delegate=principal | 仅 `origin=task-snapshot-controller` 且 source delegation/controller authority 匹配 | owner=principal 时按独立 owner 规则处理，不自动转移、不写 owner |
+| Membership workspace | controller=principal；controller delegation 的 grantor=principal；delegate=principal | grantee=principal；source delegation 的 grantor=principal；delegate=principal | 仅 `origin=task-snapshot-controller` 且 source delegation/controller authority 匹配 | owner=principal 时按独立 owner 规则处理，不写 owner |
 | Delegation workspace | controllerDelegationId=delegationId | sourceDelegationId=delegationId | `sourceDelegationId=delegationId` 的 snapshot controller Grant | owner 不因 Delegation 撤销自动改变 |
 
 **A4 的 delegate 遗漏已修正**：Membership fence 对 ArtifactGrant 的扫描不能只看 grantee 或 grantor，还必须覆盖 `sourceDelegationId` 对应 Delegation 的 delegate。Agent 作为 delegate 被移出 Workspace、Principal disabled、Delegation revoked 都必须命中。
@@ -201,7 +210,7 @@ Reconcile 必须从权威关系出发，而不是只扫描“直接 grantee”�
 - `origin=explicit`/`task-snapshot-requester` 的 Grant 不因 Membership/Principal/Delegation 撤权自动写 `revokedAt`；它们使用当前 grantee/source 的 live ACL 立即 effective 无效/恢复，不做 controller authority version 绑定。显式 revoke 仍由 `updateArtifactGrant` 执行。
 - `grantedByPrincipalId` 是授权时的审计主体，不是 explicit Grant 的长期 live 依赖；grantor 失去 Membership 不会自动撤销其签发的 explicit Grant。explicit Grant 只由显式 revoke、grantee 失效或独立的 Artifact ACL 变化改变。
 - `origin=task-snapshot-controller` 的 Grant 依赖 `sourceDelegationId`/controller authority version；该依赖失效时立即 effective 无效，并物化 `revokedAt`；re-add/enable 不会让它自动恢复。
-- `Artifact.ownerPrincipalId` 是独立所有权，不因 Controller 冻结自动转移；owner 失效时访问按当前成员/Principal 规则拒绝，需 Owner/Admin 显式转移。
+- `Artifact.ownerPrincipalId` 是独立所有权，不因 Controller 冻结自动转移；owner 失效时访问按当前成员/Principal 规则拒绝，需 Owner/Admin 显式转移。Reconcile 对 owner 关系只做完整性审计，不得写 ownerPrincipalId、不得删除 Artifact。
 
 ### 3.3 Reconcile 状态机
 
@@ -223,27 +232,55 @@ completed
 - 启动扫描 `pending/reconciling/failed`。
 - `reconciling` 的进度可恢复；崩溃不会把 Fence 变成无效。
 - `completed` 只对该 fence 的 `sourceVersion/scope` 终态；不授权新对象，不解除旧 Task 的冻结。
+- 源级事件在撤权 commit；`controller.frozen`/`artifact.grant_revoked`/`authorization.reconciled` 是 Reconcile 派生事件，按 `fenceId + sourceVersion + targetId` 幂等，不能要求源事务枚举全部目标。
 
 ### 3.4 完成条件
 
 Fence 只有同时满足以下条件才能标记 `completed`：
 
-1. 从权威状态重新执行 scope 查询，覆盖全部 Task/Grant/Artifact owner 关系；
-2. 每个目标对象已处于预期派生状态（Task frozen；snapshot controller Grant revoked），或已由**新的权威记录**证明不再是该 fence 的目标（transfer、re-add、new delegation、new explicit grant）；explicit/requester Grant 不作为物理物化目标，但仍必须由 effective ACL 检查；
-3. 没有扫描错误、Store 错误、无法解析的引用；
-4. 所有批次、进度、事件和完成记录在同一 commit 成功；
-5. 多 fence 重叠时，没有未解决的冲突版本；
-6. 不能仅凭 `processedTaskIds`/`processedGrantIds` 判断完成；进度不是完整性证明。
+1. 从权威状态重新执行 scope 查询，覆盖全部 **Task target identity**、**snapshot-controller Grant target identity**；Artifact owner 关系只用于完整性审计，不是物理物化目标。
+2. 每个目标 Task 已处于预期派生状态（`controlState=frozen`），**或**存在针对该具体 `taskId` 的权威 `transferController` 记录，且该记录在同一事务写入了新的 controller authority binding、撤销了该 Task 的旧 snapshot-controller Grant（若有）；仅有 Principal enable、Membership re-add、new delegation、new explicit Grant 不算。
+3. 每个目标 snapshot-controller Grant 已 `revokedAt`，**或**由针对该具体 `grantId`/`sourceDelegationId` 的显式 transfer/revoke 在同一事务撤销；new explicit Grant 是不同 grantId，不能替代旧 snapshot Grant 的撤销义务。
+4. Artifact owner 的 `ownerPrincipalId` 未被 Reconcile 修改；owner 失效只走 live ACL + 显式 owner transfer，不能作为 Fence 的物化目标。
+5. 没有扫描错误、Store 错误、无法解析的引用；扫描中发现的新对象若仍绑定旧 `sourceVersion`，必须纳入目标或 fail closed，不能跳过。
+6. 所有批次、进度、派生事件和完成记录在同一 commit 成功；源级事件已在撤权 commit 成功。
+7. 多 fence 重叠时，没有未解决的冲突版本；每个 Fence 只对自身 `sourceVersion/scope` 完成。
+8. 不能仅凭 `processedTaskIds`/`processedGrantIds` 判断完成；进度不是完整性证明。
 
-无法确认完整性时：保持 `pending/reconciling/failed`，不得乐观标记 `completed`。
+**Task target identity：**
+
+```text
+taskId
++ controllerPrincipalVersion
++ controllerMembershipVersion
++ controllerDelegationId
++ controllerDelegationVersion
+```
+
+**Snapshot-controller Grant target identity：**
+
+```text
+grantId + origin=task-snapshot-controller
++ granteePrincipalId + granteePrincipalVersion + granteeMembershipVersion
++ sourceDelegationId + sourceDelegationVersion
+```
+
+- 目标识别必须使用具体对象 ID 与 authority binding，不能只看 Principal ID、当前 Membership 或“存在新授权”。
+- 旧 Task/Grant 的 binding 不会因 enable/re-add/new delegation/new explicit Grant 自动更新；因此它们仍是旧 Fence 的目标，直到显式 transfer/revoke 生效。
+- 无法确认完整性时：保持 `pending/reconciling/failed`，不得乐观标记 `completed`。
+- 完整目标 identity、操作影响矩阵与 owner/事件边界见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`。
 
 ### 3.5 重叠 Fence 与新授权
 
 - 每个 Fence 绑定 `sourceKind/sourceKey/sourceVersion`；旧 Fence 只处理旧版本目标。
 - 旧 Reconcile 只能写 `frozen`/`revoked`，不能写 `active`、不能删除新 Grant、不能覆盖新 controller。
 - 新撤权创建新 Fence；旧 Fence 完成不代表新 Fence 完成。
-- Principal enable、Membership re-add、Delegation re-create 产生新 authority version/新 ID；旧 Fence 不命中新对象，也不会使旧 Task 解除冻结。
+- **Principal enable 不自动解除旧 Task 冻结**：旧 Task 的 `controllerPrincipalVersion` 仍是旧值；只有显式 transfer 才重新绑定。
+- **Membership re-add 不自动解除旧 Task 冻结**：旧 Task 的 `controllerMembershipVersion` 仍是旧值；re-add 只影响新对象/新绑定。
+- **新建 Delegation 不自动替换旧 Task 的 `controllerDelegationId`**；旧 Task 仍是旧 Fence 目标。
+- **新建 explicit Grant 不替代、不恢复旧 snapshot-controller Grant**；旧 snapshot Grant 仍必须由 Fence/显式 revoke 物化撤销。新 explicit Grant 若有效，按独立 ACL 规则允许访问，但不能让旧 Grant 留在未撤销状态并宣称 Reconcile 完整。
 - 新显式 Grant/transfer 必须绑定当前 authority version；旧 Fence 不得把它们误判为旧目标。
+- 撤权 commit 后创建的新对象若仍绑定旧 `sourceVersion`，是授权/Store bug：必须纳入旧 Fence 目标或 fail closed，不能视为“新对象”跳过。
 - 旧 Fence 的 `completed` 不会恢复旧权限；旧 controller 只能被显式 transfer 替换。
 
 ### 3.6 失败场景表
@@ -257,10 +294,11 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 | Store 写失败 | 有效 | 未完成 | 否 | `failed`，retry |
 | 扫描不完整/引用无法解析 | 有效 | 不确定 | 否 | 保持 pending/failed |
 | 完成记录写失败 | 有效 | 已完成但未标记 | 否 | retry 完成记录 |
-| 重复批次 | 有效 | 已 frozen/revoked | 是（幂等） | 跳过重复 Event |
-| transfer 并发 | 有效 | 旧 controller 不再是目标 | 是（跳过） | 条件更新 |
+| 重复批次 | 有效 | 已 frozen/revoked | 是（幂等） | 跳过重复派生事件 |
+| transfer 并发（具体 taskId） | 有效 | 新 controller 已绑定；旧 snapshot Grant 已同事务撤销 | 是（该 Task 跳过） | 条件更新基于 taskId/binding |
 | 新撤权并发 | 两个 Fence 均有效 | 并集 | 各自独立完成 | 新 Fence 处理新版本 |
-| re-add/enable/new delegation | 旧 Fence 仍有效于旧版本 | 新对象不匹配 | 旧 Fence 可完成 | 旧 Task 仍 frozen |
+| re-add/enable/new delegation | 旧 Fence 仍有效于旧版本 | 新对象不匹配；旧 Task 仍旧 binding | **否，直到旧 Task 物化 frozen** | 旧 Task 仍 frozen；新对象不受旧 Fence |
+| 新 explicit Grant | 旧 Fence 仍有效于旧 snapshot Grant | 新 Grant 独立；旧 Grant 仍可能未撤销 | **否，直到旧 snapshot Grant 物化 revoked** | 旧 Grant 撤销；新 Grant 按独立 ACL |
 | 投影损坏/不一致 | 有效 | 不可信 | 否 | 从权威重算，失败则 failed |
 
 ### 3.7 Reconcile 不变量
@@ -273,6 +311,10 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 6. 旧 controller 不能因 re-add/enable/new delegation/恢复操作重新获得控制；只能显式 transfer。
 7. 运行中 Execution 不因撤权被标记 cancelled；dispatch_intent 不被追溯取消。
 8. 无法确认完整性时保留 pending/failed，不得乐观完成。
+9. 目标识别必须基于具体对象 ID + authority binding；不能只看 Principal ID 或当前 Membership。
+10. 新 explicit Grant 不免除旧 snapshot-controller Grant 的物理撤销义务。
+11. Artifact owner 不是 Fence 的物化目标；Reconcile 不得修改 ownerPrincipalId。
+12. 源级事件与派生事件分离；派生事件幂等且不能作为授权前置条件。
 
 ---
 
@@ -321,7 +363,7 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 | 权威状态 | disable V->V+1，Fence(V)；enable V+1->V+2 |
 | 即时授权 | enable 后 Principal active；但旧 Task controllerPrincipalVersion=V，当前 V+2，仍 frozen |
 | 派生状态 | 旧 Task 可能仍 frozen 或 active cache；API 用 effective |
-| Reconcile | 旧 Fence 完成；旧 Task 不自动 unfreeze；新 Task 用 V+2；旧 Delegation 仍需新 grant |
+| Reconcile | 旧 Fence 必须把仍绑定 V 的旧 Task 物化 frozen；enable 不改变旧 binding；只有显式 transfer 才能重新绑定；新 Task 用 V+2 |
 
 ### 4.6 Membership revoke 后重新加入
 
@@ -330,7 +372,7 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 | 权威状态 | revoke V->V+1，Fence(V)；re-add V+1->V+2 |
 | 即时授权 | 旧 Task controllerMembershipVersion=V，当前 V+2，仍 frozen；新请求按新 membership |
 | 派生状态 | 旧 Task 可能未物化；snapshot-controller Grant 的 grantee version 失效；explicit/requester Grant 按 live ACL 暂停 |
-| Reconcile | 旧 Fence 只处理 V；新对象 V+2 不命中；旧 controller 仍需 transfer |
+| Reconcile | 旧 Fence 必须冻结仍绑定 V 的旧 Task；新对象 V+2 不命中；旧 Fence 只能在旧目标全部物化后完成；旧 controller 仍需 transfer |
 
 ### 4.7 Controller transfer 与旧 Controller Fence 并发
 
@@ -339,7 +381,7 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 | 权威状态 | transfer 写新 controller + 新 authority version；旧 Fence(V) 仍存在 |
 | 即时授权 | transfer 后新 controller active；旧 controller frozen |
 | 派生状态 | 旧 snapshot Grant 撤销/新 Grant 创建同事务；旧 Fence 可能未完成 |
-| Reconcile | 条件更新发现 controller/version 已变，跳过；不覆盖新 controller；旧 Fence 不复活旧权限 |
+| Reconcile | 仅当具体 taskId 的 binding 已由 transfer 改变、且旧 snapshot Grant 已同事务撤销时，旧 Task 才跳过；条件更新不得覆盖新 controller；旧 Fence 不复活旧权限 |
 
 ### 4.8 ArtifactGrant Reconcile 期间发生新的撤权
 
@@ -356,8 +398,8 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 |---|---|
 | 权威状态 | 新显式 Grant/transfer 绑定当前 version；或新撤权创建新 Fence |
 | 即时授权 | 新授权按新记录生效；新撤权按新 version 拒绝 |
-| 派生状态 | 旧 `completed` 不代表新对象状态 |
-| Reconcile | 旧 Fence 不重开；新授权/撤权由新记录/新 Fence 处理；旧 Task 仍按旧绑定 frozen |
+| 派生状态 | 旧 `completed` 不代表新对象状态；新 explicit Grant 是独立 grantId |
+| Reconcile | 旧 Fence 不重开；新授权/撤权由新记录/新 Fence 处理；旧 snapshot Grant 仍必须按旧 Fence 撤销；新 explicit Grant 不替代该义务；旧 Task 仍按旧绑定 frozen |
 
 ### 4.10 Replay 命中旧 RequestRecord，但当前授权已经失效
 
@@ -383,8 +425,8 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 |---|---|
 | 权威状态 | Membership/Delegation/Principal 失效 + Fence |
 | 即时授权 | controller 权限拒绝；Artifact owner 读取也因当前成员/Principal 失效而拒绝 |
-| 派生状态 | Artifact owner 不自动转移；snapshot Grant effective 无效，`revokedAt` 可滞后 |
-| Reconcile | 物化 snapshot Grant 撤销；Artifact 不删除；Workspace Owner/Admin 审计读取；需显式 owner transfer/处置 |
+| 派生状态 | Artifact owner 不自动转移；snapshot Grant effective 无效，`revokedAt` 可滞后；ownerPrincipalId 不变 |
+| Reconcile | 只物化 snapshot Grant 撤销；不修改 ownerPrincipalId、不删除 Artifact；owner 访问按 live ACL 拒绝；Workspace Owner/Admin 审计读取；需显式 owner transfer/处置 |
 
 ---
 
@@ -505,6 +547,8 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 **OD-11 已按用户选择方案 A 正式冻结；AD-06-R1/AD-12-R1 已写入规范性文档。**
 
 **Reconcile 已补齐 Delegation delegate 覆盖，并明确 L1/L2/L3 分层、完成条件、重叠 Fence、失败恢复。**
+
+**A6 已进一步收窄目标 identity/跳过条件，区分源级/派生事件，并明确 Artifact owner 不进入物化目标；详见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`。**
 
 **OD-09 仍为独立归档事项，不影响 Authority Fence 决策。**
 

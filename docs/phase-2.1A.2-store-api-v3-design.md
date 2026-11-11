@@ -266,11 +266,15 @@ controllerAuthorityValid(task) =
 - Principal global fence：扫描所有 Workspace 中 controller=principal、controller delegation 的 grantor/delegate=principal、grantee=principal 或 source delegation 的 grantor/delegate=principal 的 **snapshot controller** Grant；delete 还物化 Membership revoked。disable 不把 stored active Membership 改成 revoked（enable 需要恢复 effective），但 Delegation 物化为 revoked。
 - Membership fence：扫描该 Workspace 中 controller=principal 或 controller delegation 的 grantor=principal 或 delegate=principal 的 Task；grantee=principal 或 source delegation grantor=principal 或 delegate=principal 的 **snapshot controller** Grant。
 - Delegation fence：扫描 `controllerDelegationId=delegationId` 的 Task；`sourceDelegationId=delegationId` 的 snapshot controller Grant。
-- `origin=explicit`/`task-snapshot-requester` 的 Grant 不因 Membership/Principal/Delegation 撤权自动写 `revokedAt`；它们在读取时按 grantee/source 当前授权立即 effective 无效/恢复。显式 revoke 仍由 `updateArtifactGrant` 执行。
-- 条件更新：只冻结当前 controller 绑定仍匹配该 fence `sourceVersion` 的 Task；若已 transfer 或 re-add/enable 后重新绑定到新 version，跳过，不覆盖新 controller。匹配规则：principal fence 看 `controllerPrincipalVersion` 或 delegation 的 grantor/delegate principal version；membership fence 看 `controllerMembershipVersion`（直接 controller）或 delegation 的 grantorMembershipVersion（委托 controller）；delegation fence 看 `controllerDelegationVersion`。
+- `origin=explicit`/`task-snapshot-requester` 的 Grant 不因 Membership/Principal/Delegation 撤权自动写 `revokedAt`；它们在读取时按 grantee/source 当前授权立即 effective 无效/恢复。显式 revoke 仍由 `updateArtifactGrant` 执行。new explicit Grant 是不同 grantId，不能替代旧 snapshot Grant 的撤销义务。
+- 条件更新：只冻结当前 controller 绑定仍匹配该 fence `sourceVersion` 的 Task；只有显式 `transferController` 改变 binding 后才跳过，单纯 re-add/enable 不改变旧 Task binding，不得跳过。匹配规则：principal fence 看 `controllerPrincipalVersion` 或 delegation 的 grantor/delegate principal version；membership fence 看 `controllerMembershipVersion`（直接 controller）或 delegation 的 grantorMembershipVersion（委托 controller）；delegation fence 看 `controllerDelegationVersion`。
 - 已完成/已冻结对象跳过；不追加重复 Event；`processedTaskIds`/`processedGrantIds` 是幂等进度，不是授权判据。
 - 崩溃恢复：从进度继续；未记录批次可重做；批次 commit 原子。
-- 完成：没有剩余匹配对象后，同 commit 写 `status=completed`、`completedAt`、`authorization.reconciled`；完成记录失败则保持 pending/retry，不影响即时拒绝。完成前必须从权威状态重新扫描；不能仅凭 `processedTaskIds`/`processedGrantIds` 乐观标记完成。
+- 完成：从权威状态重新扫描 Task target identity/snapshot Grant target identity，确认全部目标已 frozen/revoked，或存在针对具体对象的显式 transfer/revoke；不能仅凭 processed ids 乐观标记完成。`completed` 只表示当前 fence/sourceVersion/scope 的物化完成。完成记录失败保持 pending/retry。
+- 目标识别必须基于具体 Task/Grant ID + authority binding；Principal enable、Membership re-add、new Delegation、new explicit Grant 不能单独让旧目标退出旧 Fence。new explicit Grant 是不同 grantId，不能替代旧 snapshot Grant 的撤销义务。
+- 扫描中发现的新对象若仍绑定旧 `sourceVersion`，必须纳入旧 Fence 或 fail closed；不能当作新对象跳过。
+- 源级撤权事件在撤权 commit；`controller.frozen`/`artifact.grant_revoked`/`authorization.reconciled` 是 Reconcile 派生事件，按 `fenceId+sourceVersion+targetId` 幂等。
+- Reconcile 对 Artifact owner 只做完整性审计，不得写 `ownerPrincipalId`、不得删除 Artifact；owner 失效只影响 live ACL，显式 owner transfer 仍是独立治理操作。
 - 重复撤权：同一 `(sourceKind, sourceKey, sourceVersion)` 返回已有 fence；若源已处于同一终态（revoked/disabled/deleted），返回该 sourceKey 的现有 fence，不按 commit 后的新 version 再建。只有 re-add/enable 后再次失效才创建新 version 的 fence。
 - 绝不写 `controlState=active`、绝不恢复旧 controller、绝不自动创建/取消 Execution、绝不释放 Lease。旧 controller 只能通过显式 `transferController` 被替换。
 
@@ -278,7 +282,7 @@ controllerAuthorityValid(task) =
 
 - AD-08 的“立即失效”由源状态 + authority version + fence 共同保证；不等待物化。
 - **AD-12-R1**：撤权 commit 的同一 Store commit 边界包含最终授权检查、Principal/Membership/Delegation 权威 status/version、`AuthorityRevocationFence`、`authorizationRevision` 和审计事件。
-- `Task.controlState`、`Task.controllerFrozenReason/At`、`ArtifactGrant.revokedAt` 是派生投影，允许异步 Reconcile；它们不是授权事实来源，reconcile 未完成不得放行旧权限。
+- `Task.controlState`、`Task.controllerFrozenReason/At`、snapshot-controller `ArtifactGrant.revokedAt` 是派生投影，允许异步 Reconcile；它们不是授权事实来源，reconcile 未完成不得放行旧权限。
 - AD-06-R1：Controller 冻结时 snapshot controller Grant 由 Fence 立即 effective 无效，`revokedAt` 异步物化；显式 transfer 仍同事务撤销旧 Grant/创建新 Grant。
 - 不得把 AD-12-R1 扩大为“所有 Artifact ACL 变化都可延迟”：显式 grant/revoke、Artifact owner 转移、visibility 变化仍按其独立事务/授权规则处理。
 
@@ -315,16 +319,16 @@ controllerAuthorityValid(task) =
 | `quarantineWorkspace` | workspaceId, reason, evidence | Workspace + Lease | Owner/Admin + path/lease evidence | quarantineState + lease state + authRev | `workspace.quarantined`; 禁止新写 |
 | `recoverWorkspace` | workspaceId, evidence | Workspace + Lease | system recovery/offline；证据 | quarantine normal/lease released/recovered | `workspace.recovered` |
 | `createPrincipal` | type, displayName, creator | Principal | bootstrap/system admin | Principal + audit + authRev | `principal.created` |
-| `disablePrincipal` | principalId, reason | Principal + fence | system/self/admin；last owner check | Principal disabled + principal fence(global) + authRev；Membership/Delegation/Task 由 effective/fence 立即失效 | `principal.disabled`, `controller.frozen` |
+| `disablePrincipal` | principalId, reason | Principal + fence | system/self/admin；last owner check | Principal disabled + principal fence(global) + authRev；Membership/Delegation/Task 由 effective/fence 立即失效 | `principal.disabled`（源级）；per-Task `controller.frozen` 为派生事件 |
 | `enablePrincipal` | principalId | Principal | system/admin；所有 principal fence completed | Principal active + authRev | `principal.enabled`; 不恢复 revoked Membership/Delegation/旧 controller |
 | `deletePrincipal` | principalId | Principal + fence | system/admin；last owner check | disabled/deletedAt + principal fence(global) + authRev；Membership/Delegation effective revoked | `principal.deleted` |
 | `addMember` | workspaceId, principalId, role | Membership + Revision | Owner/Admin；角色合法 | Membership + MembershipRevision + authRev | `membership.added` |
 | `updateMemberRole` | workspaceId, principalId, role | Membership + Revision | Owner/Admin；不能移除最后 Owner | changed role + version + Revision + authRev；若新 role 不再允许控制，旧 controller 因 version 不匹配立即 frozen | `membership.role_changed` |
-| `removeMember` | workspaceId, principalId, reason | Membership + Revision + fence | Owner/Admin；非 Owner/最后 Owner | revoked + version + Revision + membership fence + authRev；effective freeze 立即 | `membership.removed`, `controller.frozen` |
+| `removeMember` | workspaceId, principalId, reason | Membership + Revision + fence | Owner/Admin；非 Owner/最后 Owner | revoked + version + Revision + membership fence + authRev；effective freeze 立即 | `membership.removed`（源级）；per-Task `controller.frozen` 为派生事件 |
 
 `updateMembership` 是 add/updateRole/remove 的语义总称；v3 **不暴露**一个可任意 patch role/status 的 generic 接口，避免绕过 Owner 唯一性、last-owner 和 history 规则。API 层分别提供 `addMember`/`updateMemberRole`/`removeMember`/`leaveWorkspace`。
 | `createDelegation` | workspaceId, grantee, scopes, resourceScope, expiresAt | Delegation | User grantor effective active；scope ≤ grantor；delegate Agent/member | Delegation + grantor/delegate authority version + authRev | `delegation.created` |
-| `revokeDelegation` | delegationId, reason | Delegation + revocationFence | grantor/delegate/Owner/Admin | revoked + version + delegation fence + authRev；effective control/grant 立即失效；materialization 异步 | `delegation.revoked`, `controller.frozen` |
+| `revokeDelegation` | delegationId, reason | Delegation + revocationFence | grantor/delegate/Owner/Admin | revoked + version + delegation fence + authRev；effective control/grant 立即失效；materialization 异步 | `delegation.revoked`（源级）；per-Task `controller.frozen` 为派生事件 |
 | `createInvite` | workspaceId, targetPrincipalId, role | Invite | Owner/Admin | Invite + authRev | `membership.invited` |
 | `acceptInvite` | inviteId | Membership + Revision | target principal effective active | Membership + Revision + authRev | `membership.added` |
 | `selectDelegation` | delegationId | Connection context | delegate=actor；workspace match | no business mutation（只绑定连接） | `connection.delegation_selected`（system audit） |
@@ -605,6 +609,7 @@ task.awaiting_decision/completed/failed/cancelled
 execution.created/dispatched/output/settled/cancel_requested/cancel_sent/reconciled
 session.bound/cleanup/reconciled
 artifact.created/updated/referenced/unreferenced/soft_deleted/purged
+artifact.grant_changed/grant_revoked
 membership.added/role_changed/removed/re_added
 delegation.created/revoked/expired
 controller.transferred/frozen
@@ -614,6 +619,10 @@ authorization.denied/reconciled
 ```
 
 事件 type 是 schema 的一部分；payload 版本由 `schemaVersion` 演进。
+
+- 源级事件（principal/membership/delegation 撤权、`controller.transferred`、显式 `artifact.grant_changed`）必须在对应命令/撤权 commit 中。
+- 派生事件（`controller.frozen`、`artifact.grant_revoked`、`authorization.reconciled`）可在 Reconcile 批次中；必须按 `fenceId + sourceVersion + targetId` 幂等，不能作为授权失效前置条件。
+- Event 查询仍按当前授权重新过滤；派生事件不是读取凭证。
 
 ---
 
@@ -677,7 +686,7 @@ EventPage = { events[], nextSequence, hasMore }
 | `createDelegation` | workspaceId,grantee,scopes,resourceScope,expiresAt | Delegation | User grantor | requestKey | `DELEGATION_SCOPE`; `delegation.created` | 无 |
 | `getDelegation` | delegationId | Delegation | grantor/delegate/Owner/Admin | no | `AUTHORIZATION_REVOKED` | 无 |
 | `listDelegations` | workspaceId | Delegation[] | grantor/delegate/Owner/Admin | no | `FORBIDDEN` | 无 |
-| `revokeDelegation` | delegationId,reason | Delegation + affected IDs | grantor/delegate/Owner/Admin | requestKey | `delegation.revoked`; `controller.frozen` | 无 |
+| `revokeDelegation` | delegationId,reason | Delegation + affected IDs | grantor/delegate/Owner/Admin | requestKey | `delegation.revoked`（源级）；`controller.frozen` 由 Reconcile 派生 | 无 |
 | `selectDelegation` | delegationId | ConnectionContext | delegate=actor | control | `DELEGATION_RESOURCE` | 无 |
 
 ### 6.3 Task / Execution API
