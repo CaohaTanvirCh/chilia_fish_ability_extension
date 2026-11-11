@@ -225,6 +225,9 @@ readAuthorized(context, query) -> filtered snapshot page
 
 - 每个撤权 commit 只写**源记录 + 对应 fence + authRev + 审计 Event**；不要求枚举所有受影响 Task/Grant。
 - `fence.sourceVersion` 取 commit 前的源 version；commit 后源记录 version 递增。不要用新 version 作 fence key；且 version 只能在 sourceKey 的 ID/Workspace 匹配后比较，不能跨主体使用。
+- `sourceKey` 按 Contracts 5.3.1 规范编码；sourceKind/sourceKey/scope/principalId/delegationId 必须一致（principal: principalId 匹配、workspaceId=null、delegationId=null；membership: workspace/principal 匹配、delegationId=null；delegation: delegationId 匹配、principalId=null、workspace=权威 Delegation.workspaceId）。不一致 -> `quarantined`，不得 completed、不得跳过目标、不得静默改写身份字段。
+- `status=failed` 是 transient retryable；`status=quarantined` 需显式权威数据校验/修复，不能自动重试。
+- 旧版本对象：只有精确 `sourceVersion` 命中；低于 sourceVersion 的对象必须由历史 Fence completed/物化或有效 frozen/revoked 证据覆盖，否则 orphan/quarantine，当前 Fence 不得 completed；高于 sourceVersion 的对象不得被覆盖。
 - 撤权 commit 不取消 running Execution，不写 `cancel.requestedAt/confirmedAt`，不释放 WorkspaceWriteLease，不删除 Artifact，不改变 Task `goalStatus`/`lifecycle`。
 - 最后一个 Owner 的 remove/disable/delete 必须 `LAST_OWNER` 拒绝，或走 system ownerless recovery；不能由普通撤权静默产生无主 Workspace。
 - `enablePrincipal` 必须等待该 Principal 的 principal fence 全部 `completed`；否则返回 `AUTHORIZATION_RECONCILING`。否则可能在 Delegation 尚未物化时重新启用，导致旧委托复活。
@@ -262,16 +265,17 @@ controllerAuthorityValid(task) =
 
 #### Reconcile
 
-- 启动扫描 `status != completed` 的 fence；按 `authorizationRevision`、`fenceId` 排序，分批处理。
+- 启动扫描 `pending/reconciling/failed` 的 fence；`quarantined` 不自动 retry，必须显式权威数据校验/修复。按 `authorizationRevision`、`fenceId` 排序，分批处理。
 - Principal global fence：扫描所有 Workspace 中 controller=principal、controller delegation 的 grantor/delegate=principal、grantee=principal 或 source delegation 的 grantor/delegate=principal 的 **snapshot controller** Grant；delete 还物化 Membership revoked。disable 不把 stored active Membership 改成 revoked（enable 需要恢复 effective），但 Delegation 物化为 revoked。
 - Membership fence：扫描该 Workspace 中 controller=principal 或 controller delegation 的 grantor=principal 或 delegate=principal 的 Task；grantee=principal 或 source delegation grantor=principal 或 delegate=principal 的 **snapshot controller** Grant。
 - Delegation fence：扫描 `controllerDelegationId=delegationId` 的 Task；`sourceDelegationId=delegationId` 的 snapshot controller Grant。
 - `origin=explicit`/`task-snapshot-requester` 的 Grant 不因 Membership/Principal/Delegation 撤权自动写 `revokedAt`；它们在读取时按 grantee/source 当前授权立即 effective 无效/恢复。显式 revoke 仍由 `updateArtifactGrant` 执行。new explicit Grant 是不同 grantId，不能替代旧 snapshot Grant 的撤销义务。
-- 匹配前先解析 `sourceKey`：`principal:<principalId>`（global）、`membership:<workspaceId>:<principalId>`（workspace）、`delegation:<delegationId>`（workspace）。version 是局部版本，不能替代 ID/Workspace 匹配。
+- 匹配前先按 Contracts 5.3.1 规范编码/解析 `sourceKey`：`principal:<encoded(principalId)>`（global）、`membership:<encoded(workspaceId)>:<encoded(principalId)>`（workspace）、`delegation:<encoded(delegationId)>`（workspace）。非规范编码、空字段、额外分隔符、非法 `%`、ID/scope 与冗余字段不一致 -> `quarantined`。version 是局部版本，不能替代 ID/Workspace 匹配。
 - 条件更新：只冻结当前 controller 绑定仍匹配该 fence `sourceKey/sourceVersion` 的 Task；只有显式 `transferController` 改变 binding 后才跳过，单纯 re-add/enable 不改变旧 Task binding，不得跳过。匹配必须同时校验身份、作用域和版本：Principal fence 要求被比较的 Principal ID == `fencePrincipalId` 且对应 Principal version == sourceVersion（global）；Membership fence 要求 workspaceId == `fenceWorkspaceId`、Principal ID == `fencePrincipalId` 且对应 Membership version == sourceVersion；Delegation fence 要求 delegationId == `fenceDelegationId` 且 delegation version == sourceVersion，并校验 Workspace。委托目标要分别检查 Delegation grantor/delegate 两端的 ID/Workspace/version，不能只看 version 数值；ArtifactGrant 的 sourceDelegationId 非 null 时同样解析完整 Delegation binding。
 - 已完成/已冻结对象跳过；不追加重复 Event；`processedTaskIds`/`processedGrantIds` 是幂等进度，不是授权判据。
 - 崩溃恢复：从进度继续；未记录批次可重做；**每个 batch commit 原子**；batch commit 与 Fence completion commit 分离，不要求所有批次同一事务。
 - 完成：从权威状态重新扫描 Task target identity/snapshot Grant target identity，确认全部目标已 frozen/revoked，或存在针对具体对象的显式 transfer/revoke；不能仅凭 processed ids 乐观标记完成。`completed` 只表示当前 fence/sourceVersion/scope 的物化完成。completion commit 单独提交 `status=completed`/`completedAt`/`authorization.reconciled`；失败保持 pending/retry，不回滚已完成批次、不重复派生事件。
+- completion 还必须检查同 source identity、version < current sourceVersion 的旧对象：有历史 Fence completed/物化或有效 frozen/revoked 证据才可跳过；否则 orphan/quarantine，当前 Fence 不得 completed。version > sourceVersion 的对象不属于当前 Fence，但不得被覆盖。
 - 目标 identity 必须包含 Task 的 taskId/workspaceId/controllerPrincipalId/authority versions，以及 Snapshot Grant 的 grantId/artifactId/workspaceId/granteePrincipalId/authority versions/sourceDelegationId/Version；委托目标解析 Delegation 的 workspaceId + grantor/delegate Principal ID + 各自 Principal/Membership version。ID/Workspace/version 任一不一致即不匹配或 fail closed。
 - Principal enable、Membership re-add、new Delegation、new explicit Grant 不能单独让旧目标退出旧 Fence；new explicit Grant 是不同 grantId，不能替代旧 snapshot Grant 的撤销义务。
 - 扫描中发现的新对象若仍绑定旧 `sourceVersion`，必须纳入旧 Fence 或 fail closed；不能当作新对象跳过。
@@ -1084,4 +1088,4 @@ Store v3/API v3 的稳定边界：
 7. v2→v3 离线迁移，不猜测 owner/workspace/Delegation/Artifact；不可映射数据 quarantine。
 8. Windows root 仅 cooperative；无 native helper/OS sandbox 时不宣称 containment。
 
-本文件不实现 Store/API/Adapter/迁移；实现前需通过 `docs/phase-2.1A.2-design-review.md` 的 P0/P1 依赖检查；AD-06-R1/AD-12-R1 已冻结，详见 `docs/phase-2.1A.5-authority-fence-decision-closure.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`。整体实现仍需 Phase 2.1B 批准。
+本文件不实现 Store/API/Adapter/迁移；实现前需通过 `docs/phase-2.1A.2-design-review.md` 的 P0/P1 依赖检查；AD-06-R1/AD-12-R1 已冻结，详见 `docs/phase-2.1A.5-authority-fence-decision-closure.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`；Fence 字段一致性/sourceKey 规范编码/旧版本 orphan 见 `docs/phase-2.1A.9-authority-fence-record-consistency-audit.md`。整体实现仍需 Phase 2.1B 批准。

@@ -223,16 +223,22 @@ pending/reconciling
   -> failed
   -> pending/reconciling（retry）
 
+pending/reconciling/failed
+  -> quarantined（identity/scope/history 无法证明）
+  -> explicit authority validation/repair
+  -> pending/reconciling（只能由显式修复流程）
+
 completed
   -> terminal for this fence
   -> 新撤权/新版本必须创建新 fence，不能复活旧 fence
 ```
 
-- `failed` 是可重试状态，不是终态。
-- 启动扫描 `pending/reconciling/failed`。
+- `failed` 可重试；`quarantined` 表示 sourceKey/scope/ID/history 无法证明，不能自动 retry，必须显式权威数据校验/修复，且即时拒绝不变。
+- 启动扫描 `pending/reconciling/failed`；`quarantined` 只允许显式修复流程处理。
 - `reconciling` 的进度可恢复；崩溃不会把 Fence 变成无效。
 - `completed` 只对该 fence 的 `sourceVersion/scope` 终态；不授权新对象，不解除旧 Task 的冻结。
 - 源级事件在撤权 commit；`controller.frozen`/`artifact.grant_revoked`/`authorization.reconciled` 是 Reconcile 派生事件，按 `fenceId + sourceVersion + targetId` 幂等，不能要求源事务枚举全部目标。
+- `sourceKey` 按 Contracts 5.3.1 规范编码；sourceKind/sourceKey/scope/principalId/delegationId 不一致 -> `quarantined`，不得 completed。
 
 ### 3.4 完成条件
 
@@ -246,6 +252,7 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 6. **每个 batch commit 原子**（当前批次投影 + 派生事件 + 进度）；**Fence completion commit 独立**（完成状态 + `authorization.reconciled` + 审计/进度）。不要求所有批次在同一 commit；源级事件已在撤权 commit。
 7. 多 fence 重叠时，没有未解决的冲突版本；每个 Fence 只对自身 `sourceVersion/scope` 完成。
 8. 不能仅凭 `processedTaskIds`/`processedGrantIds` 判断完成；进度不是完整性证明。
+9. 同 source identity、version < current sourceVersion 的旧对象必须有对应历史 Fence completed/物化或有效 frozen/revoked 证据；否则 orphan/quarantine，当前 Fence 不得 completed。version > sourceVersion 的对象不属于当前 Fence，但不得被覆盖。
 
 **Task target identity：**
 
@@ -287,7 +294,7 @@ Snapshot-controller Grant target identity:
 - Delegation binding 通过权威记录解析；id/workspace/version 缺失或不匹配必须 fail closed，不能猜当前记录。
 - 旧 Task/Grant 的 binding 不会因 enable/re-add/new delegation/new explicit Grant 自动更新；因此它们仍是旧 Fence 的目标，直到显式 transfer/revoke 生效。
 - 无法确认完整性时：保持 `pending/reconciling/failed`，不得乐观标记 `completed`。
-- 完整目标 identity、操作影响矩阵与 owner/事件边界见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`；Delegation 双端 Membership 匹配与 batch/completion 边界见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`。
+- 完整目标 identity、操作影响矩阵与 owner/事件边界见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`；Delegation 双端 Membership 匹配与 batch/completion 边界见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`；Fence 字段一致性/sourceKey 规范编码/旧版本 orphan 见 `docs/phase-2.1A.9-authority-fence-record-consistency-audit.md`。
 
 ### 3.5 重叠 Fence 与新授权
 
@@ -322,6 +329,9 @@ Snapshot-controller Grant target identity:
 | 最后一批成功、completion commit 失败 | 有效 | 全部目标可能已物化，未标记 completed | 否 | 重试 completion；不回滚批次、不重复派生事件 |
 | completion 成功但响应丢失 | 有效 | completed | 是 | 重试返回 completed，不重复完成事件 |
 | 两个 worker 重复同一批次 | 有效 | 已记录进度 | 是（幂等） | 单 Store 串行；第二个跳过/重试安全 |
+| sourceKey/字段/scope 不一致 | 有效/不可信 | 无法解析 | **否** | `quarantined`；显式权威校验/修复 |
+| 低版本对象无历史 Fence/证据 | 有效 | orphan | **否** | orphan/quarantine；当前 Fence 不得 completed |
+| 高版本对象 | 有效 | 新 binding | 是（不属旧 Fence） | 不覆盖新对象 |
 | 投影损坏/不一致 | 有效 | 不可信 | 否 | 从权威重算，失败则 failed |
 
 ### 3.7 Reconcile 不变量
@@ -342,6 +352,9 @@ Snapshot-controller Grant target identity:
 14. Principal fence 对委托目标必须同时检查 grantorPrincipalVersion 与 delegatePrincipalVersion，并校验对应 grantor/delegate Principal ID。
 15. ArtifactGrant 的 sourceDelegationId 非 null 时，必须解析完整 Delegation binding（Workspace、grantor/delegate Principal ID、Principal/Membership version），不能只检查 sourceDelegationVersion。
 16. Reconcile batch commit 与 Fence completion commit 分离；不要求所有批次同一事务。
+17. AuthorityRevocationFence 的 sourceKey 必须按规范编码；sourceKind/sourceKey/scope/principalId/delegationId 必须一致；不一致 -> quarantined，不得 completed。
+18. sourceKey 比较使用完整规范字符串；不得大小写折叠、截断或模糊匹配。
+19. 旧版本对象必须由历史 Fence/有效证据覆盖，否则 orphan/quarantine，当前 Fence 不得 completed。
 
 ---
 

@@ -416,6 +416,8 @@ lock
 - re-add/enable/new delegation/new explicit grant 不能让旧目标跳过；
 - Artifact owner 只做 live ACL/审计，不是 Fence 物化目标；Reconcile 不得写 ownerPrincipalId；
 - 源级撤权事件与派生 `controller.frozen`/`artifact.grant_revoked` 分离；派生事件幂等且不是授权前置；
+- Fence 字段一致性：sourceKey 规范编码，sourceKind/sourceKey/scope/principalId/delegationId 必须一致；不一致 -> quarantined；
+- 旧版本对象必须有历史 Fence/有效 frozen/revoked 证据，否则 orphan/quarantine，当前 Fence 不得 completed；
 - 完成必须从权威状态重新扫描，不能仅凭 processed ids 乐观标记；batch commit 与 completion commit 分离；
 - `AUTHORIZATION_RECONCILING` 不是“旧权限仍有效”；
 - running Execution 继续，不伪造 cancel；
@@ -483,7 +485,7 @@ User U 直接控制 Task T
 
 **Reconcile 完整性：** Principal/Membership/Delegation fence 的扫描必须覆盖 grantee、Delegation grantor、Delegation delegate、controller 及 Artifact owner 的既有独立处理；不得只扫描直接 grantee。A5 第 3 节已补齐 delegate 遗漏和完成条件。
 
-详细模型、十二场景、reconcile/replay 审计与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 与 `docs/phase-2.1A.5-authority-fence-decision-closure.md`；target identity/事件/owner 边界见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`；Delegation 双端 Membership 与 batch/completion 边界见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`。
+详细模型、十二场景、reconcile/replay 审计与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 与 `docs/phase-2.1A.5-authority-fence-decision-closure.md`；target identity/事件/owner 边界见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`；Delegation 双端 Membership 与 batch/completion 边界见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`；Fence 字段一致性/sourceKey 规范编码/旧版本 orphan 见 `docs/phase-2.1A.9-authority-fence-record-consistency-audit.md`。
 
 ## 10. 实现阶段依赖与建议顺序
 

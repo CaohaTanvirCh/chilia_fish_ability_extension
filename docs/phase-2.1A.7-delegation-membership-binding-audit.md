@@ -209,6 +209,8 @@ SnapshotGrantTargetIdentity:
 - Principal fence：对象中的 Principal ID 必须等于 sourceKey 的 principalId，对应 Principal version 必须等于 sourceVersion；scope=global。
 - Membership fence：对象 Workspace 必须等于 sourceKey 的 workspaceId，Principal ID 必须等于 sourceKey 的 principalId，对应 Membership version 必须等于 sourceVersion。
 - Delegation fence：delegationId 必须等于 sourceKey 的 delegationId，version 必须等于 sourceVersion，Workspace 一致。
+- sourceKey 必须按 Contracts 5.3.1 规范编码；sourceKind/sourceKey/scope/principalId/delegationId 不一致 -> `quarantined`，不得 completed 或跳过目标。
+- 旧版本对象：低于 sourceVersion 需历史 Fence/有效证据覆盖，否则 orphan/quarantine；高于 sourceVersion 不得覆盖。
 - 目标是否可跳过：只能是该具体对象的权威变更（transfer/revoke）改变了 binding。
 - 不能因为“当前 Membership=active”“当前 Principal=active”“新建 Delegation”就跳过旧目标。
 - 不能因为 new explicit Grant 存在就认为旧 snapshot Grant 已撤销。
@@ -419,6 +421,7 @@ SnapshotGrantTargetIdentity:
 | `phase-2.1A.2-design-review.md` | 双端 Membership、batch/completion 已同步 | 一致 |
 | `phase-2.0.3-implementation-constraints.md` | AD-12-R1 只约束源级 commit；batch/completion 是独立边界 | 一致 |
 | `phase-2.1A.8-authority-fence-source-identity-audit.md` | sourceKey/ID/Workspace/version 同时匹配；数值碰撞 fail closed | 一致 |
+| `phase-2.1A.9-authority-fence-record-consistency-audit.md` | Fence 内部字段一致；sourceKey 规范编码；旧版本 orphan/quarantine | 一致 |
 
 检查结果：
 
@@ -467,6 +470,7 @@ SnapshotGrantTargetIdentity:
 - **AD-06-R1 / AD-12-R1：FROZEN。**
 - **A6 target identity/owner/事件分层：继续有效。**
 - **A8 source identity/scope/version 匹配：继续有效。**
+- **A9 fence record consistency/sourceKey canonicalization/旧版本覆盖：继续有效。**
 - Artifact owner、显式 Grant、Workspace Owner/Admin 审计权限、running Execution/unknown/interrupted/dispatch_intent 语义不变。
 - **OD-09：NEEDS_USER_DECISION（独立）。**
 - **代码实现：NOT APPROVED。**

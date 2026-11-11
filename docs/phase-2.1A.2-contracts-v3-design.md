@@ -393,7 +393,7 @@ Phase 2.1A.4 用一个统一记录覆盖 Principal、Membership、Delegation 三
 AuthorityRevocationFence:
   fenceId
   sourceKind                 principal | membership | delegation
-  sourceKey                  string        // principal:<id> / membership:<ws>:<pid> / delegation:<id>
+  sourceKey                  string        // canonical; see 5.3.1
   sourceVersion              number        // 被失效的 authority version（撤销/禁用前的版本）
   scope:
     kind                     global | workspace
@@ -403,10 +403,12 @@ AuthorityRevocationFence:
   cause                      disabled | deleted | revoked | expired
   effectiveAt                Timestamp
   authorizationRevision      number
-  status                     pending | reconciling | completed | failed
+  status                     pending | reconciling | completed | failed | quarantined
   processedTaskIds           string[]
   processedGrantIds          string[]
   lastError
+  quarantineReason           string | null
+  diagnostics                string[]      // bounded；不含 secret/路径/结果正文
   createdAt / completedAt
 ```
 
@@ -415,6 +417,28 @@ AuthorityRevocationFence:
 | Principal | `principal:<principalId>` / 失效前 Principal.version | global（所有 Workspace） | Principal 的 Membership、Delegation、Controller、ArtifactGrant；作为 grantor/delegate/grantee 的关系均覆盖 | Membership stored（仅 delete）、Delegation.status、Task.controlState、**snapshot controller** ArtifactGrant.revokedAt；explicit/requester Grant 只做 effective ACL，不自动物理撤销 |
 | Membership | `membership:<ws>:<pid>` / 失效前 Membership.version | workspace | 该成员在本 Workspace 的权限、其作为 Controller/Delegation grantor/Delegation delegate 的 Task、其作为 grantee 或 source delegation grantor/delegate 的 ArtifactGrant | Task.controlState、**snapshot controller** ArtifactGrant.revokedAt；explicit/requester Grant 只做 effective ACL |
 | Delegation | `delegation:<delegationId>` / 失效前 Delegation.version | workspace | 该 Delegation 的权限、依赖它的 Task Controller/grant | Task.controlState、`sourceDelegationId` 匹配的 snapshot controller ArtifactGrant.revokedAt |
+
+**Fence 内部身份一致性（sourceKey 是规范来源）：**
+
+| sourceKind | sourceKey 解析 | scope | principalId | delegationId | 附加校验 |
+|---|---|---|---|---|---|
+| principal | principalId | global；workspaceId=null | 必须等于解析 principalId | null | sourceKey 前缀=principal |
+| membership | workspaceId + principalId | workspace；workspaceId=解析值 | 必须等于解析 principalId | null | sourceKey 前缀=membership |
+| delegation | delegationId | workspace；workspaceId=权威 Delegation.workspaceId | null | 必须等于解析 delegationId | sourceKey 前缀=delegation |
+
+- `sourceKey` 是规范身份编码；`principalId`/`delegationId`/`scope` 是冗余字段，必须与解析结果一致。不能由不同代码路径各自选择身份来源。
+- 任一字段缺失、非预期非空、ID/scope/Workspace 不一致、权威 Delegation 无法解析 -> `status=quarantined`，`quarantined` 不是 completed；不得把相关对象当作非目标跳过，不得静默改写身份字段。
+
+#### 5.3.1 sourceKey 规范编码与解析
+
+- ID 仍是 opaque；sourceKey 不直接 split 原始 ID。sourceKey 的每个 ID 分量使用 UTF-8 百分号编码：仅保留 unreserved `A-Z a-z 0-9 - . _ ~`，其余字节写成 `%XX`（大写十六进制）。
+- 规范形式：
+  - `principal:<encoded(principalId)>`
+  - `membership:<encoded(workspaceId)>:<encoded(principalId)>`
+  - `delegation:<encoded(delegationId)>`
+- 解析：按 `:` 分割，principal 必须 2 段、membership 3 段、delegation 2 段；每段严格百分号解码；空段/额外段/非法 `%`/小写十六进制/未编码的 `:` 都拒绝。
+- 解码后重新编码必须与输入段逐字节相等；sourceKey 比较使用完整规范字符串，不做大小写折叠、截断、Unicode 归一化或模糊匹配。
+- 创建 Fence 时若 ID 无法按上述规则编码，或 sourceKind 与前缀不一致，拒绝创建/进入 quarantine；不得把 ID 中的 `:` 直接拼入 sourceKey。
 
 规则：
 
@@ -429,7 +453,8 @@ AuthorityRevocationFence:
 - Fence 提交后立即拒绝依赖该来源的新命令、读 API、Event cursor 和 Replay；不等待 `status=completed`。
 - Reconcile 只物化已生效的拒绝：写 `Task.controlState=frozen`、**snapshot controller** `ArtifactGrant.revokedAt`、`lastError`/进度；**绝不写 `controlState=active`，绝不恢复旧 Controller**。explicit/requester Grant 只做 effective ACL，不自动物理撤销。
 - 同一 sourceVersion 重复撤销返回已有 fence；若源已处于同一终态，返回该 sourceKey 的现有 fence，不按 commit 后新 version 再建。只有 re-add/enable 后再次失效才创建新 version 的 fence。
-- `status=failed` 不是终态；retry 扫描包含 `pending/reconciling/failed`。完成记录失败不改变即时拒绝。
+- `status=failed` 是可重试操作错误；`status=quarantined` 表示身份/作用域/历史覆盖无法证明，不能自动重试，必须显式权威数据校验/修复。两者都不是 completed；即时拒绝不变。
+- 旧版本对象：只有与 fence `sourceVersion` 精确相等才是该 Fence 目标；低于 sourceVersion 的对象必须由对应历史 Fence 已 completed/物化，或已有有效的 frozen/revoked 证据覆盖，否则是 orphan，当前 Fence 不得 completed，必须 quarantine/manual recovery。高于 sourceVersion 的对象不属于该 Fence，但不得被覆盖。
 - `effectiveAt` 对 expiry 可等于 `expiresAt`，允许过去时间；对 revoke 是 commit 时间。服务端时钟为准。
 - 源级撤权事件必须在撤权 commit；`controller.frozen`/`artifact.grant_revoked`/`authorization.reconciled` 是 Reconcile 派生事件，按 `fenceId+sourceVersion+targetId` 幂等，不能作为授权失效前置条件。
 - Reconcile target identity 使用具体对象 ID + authority binding；Principal enable、Membership re-add、new Delegation、new explicit Grant 不能单独让旧 Task/Grant 退出旧 Fence。
@@ -1086,6 +1111,8 @@ Store v3 必须验证：
 17. 多个撤权来源并发时取并集；任一 fence/source 仍失效则 effective control/ACL 仍拒绝。Reconcile 完成一个来源不能清除另一个来源的拒绝。
 18. Reconcile 只能写 frozen/revoked 物化值，不能写 active、不能恢复旧 controller、不能取消 Execution、不能释放 Lease。
 19. `RequestRecord` 的 Replay 与结果读取分离；Replay 不因旧 revision 失败，但必须按当前授权拒绝；结果读取只按当前资源可见性。
+20. `AuthorityRevocationFence` 的 sourceKey 必须按 5.3.1 规范编码；sourceKind/sourceKey/scope/principalId/delegationId 必须一致；不一致 -> quarantined，不得 completed、不得跳过目标、不得静默改写。
+21. 旧版本对象只能由精确 sourceVersion 的 Fence 命中；低于 sourceVersion 的对象必须由历史 Fence completed/物化或有效 frozen/revoked 证据覆盖，否则 orphan/quarantine，当前 Fence 不得 complete。
 
 ---
 
@@ -1116,4 +1143,4 @@ Contracts v3 的稳定核心是：
 - Artifact 创建时 ACL 与独立 Grant/Reference；
 - 所有终态和 unknown 证据保留 Phase 1.1 的可靠性边界。
 
-本文件只冻结数据模型和状态语义，不实现 Store/API/迁移。Store v3、API v3、ACP Adapter 边界和 v2→v3 迁移见 `docs/phase-2.1A.2-store-api-v3-design.md`。撤权模型、OD-11 方案 A 与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 和 `docs/phase-2.1A.5-authority-fence-decision-closure.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`。
+本文件只冻结数据模型和状态语义，不实现 Store/API/迁移。Store v3、API v3、ACP Adapter 边界和 v2→v3 迁移见 `docs/phase-2.1A.2-store-api-v3-design.md`。撤权模型、OD-11 方案 A 与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 和 `docs/phase-2.1A.5-authority-fence-decision-closure.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`；Fence 字段一致性/sourceKey 规范编码/旧版本 orphan 见 `docs/phase-2.1A.9-authority-fence-record-consistency-audit.md`。

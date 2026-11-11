@@ -131,6 +131,7 @@ SnapshotGrantTargetIdentity:
 ```
 
 - 匹配必须同时满足 source identity + scope + authority version；Principal ID/Delegation ID 必须等于 sourceKey 解析值，Membership 还必须 workspaceId 等于 fence workspace。
+- sourceKey 必须按 Contracts 5.3.1 规范编码；Fence 的 sourceKind/sourceKey/scope/principalId/delegationId 不一致 -> `quarantined`。
 - version 是局部版本；不同 Principal/Workspace 的相同数字版本不能误匹配。
 - Delegation binding 通过权威 Delegation 记录解析；id/workspace/version 缺失或不匹配必须 fail closed，不能猜当前记录。
 - 目标识别不能只看 Principal ID、当前 Membership、当前 Delegation 或“存在新授权”。
@@ -218,8 +219,9 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 7. **每个 batch commit 原子**（当前批次投影 + 派生事件 + 进度）；Fence completion commit 独立（completed + `authorization.reconciled` + 审计/进度）。不要求所有批次同 commit；源级事件已在源 commit。
 8. 多 Fence 重叠无未解决冲突；每个 Fence 只对自身 `sourceVersion/scope` 完成。
 9. 不能仅凭 `processedTaskIds`/`processedGrantIds` 判断完成。
+10. 同 source identity、version < current sourceVersion 的旧对象必须有历史 Fence completed/物化或有效 frozen/revoked 证据；否则 orphan/quarantine，当前 Fence 不得 completed。version > sourceVersion 的对象不属于当前 Fence，但不得被覆盖。
 
-无法确认完整性时保持 `pending/reconciling/failed`，不得乐观标记 `completed`。`completed` 只表示当前 fence/sourceVersion/scope 的物化完成；`failed` 始终可重试。
+无法确认完整性时保持 `pending/reconciling/failed`，不得乐观标记 `completed`；身份/scope/历史覆盖无法证明时进入 `quarantined`，需显式权威校验/修复。`completed` 只表示当前 fence/sourceVersion/scope 的物化完成；`failed` 可重试，`quarantined` 不自动重试。
 
 ### 5.1 batch commit 与 completion commit
 
@@ -250,6 +252,10 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 | transfer 并发（具体 taskId） | 有效 | 新 controller 已绑定；旧 Grant 已撤销 | 是（仅该 Task） | 基于 taskId + binding 条件更新 |
 | 新撤权并发 | 两个 Fence 有效 | 并集 | 各自独立完成 | 新 Fence 处理新版本 |
 | 新对象仍绑定旧 sourceVersion | 有效 | 旧 binding | **否** | 纳入目标或 fail closed；这是授权/Store bug |
+| 对象 version < fence sourceVersion，历史 Fence 已 completed | 有效 | 旧对象已 frozen/revoked | 是（旧对象不属当前 Fence） | 只处理当前 version 目标；旧证据保留 |
+| 对象 version < fence sourceVersion，无历史 Fence/证据 | 有效 | orphan binding | **否，当前 Fence 不得 completed** | orphan/quarantine；显式权威修复 |
+| 对象 version > fence sourceVersion | 有效 | 新 binding | 是（不属旧 Fence） | 不覆盖新对象；按新授权检查 |
+| Fence sourceKey/scope/ID 不一致 | 有效/不可信 | 无法解析 | **否** | `quarantined`；不得跳过目标/静默改写 |
 | re-add/enable/new delegation | 有效 | 旧目标仍旧 binding | **否，直到旧目标 frozen** | 新对象不受旧 Fence |
 | new explicit Grant | 有效 | 旧 snapshot Grant 仍可能未撤销 | **否，直到旧 Grant revoked** | 新 Grant 按独立 ACL |
 | 投影损坏/不一致 | 有效 | 不可信 | 否 | 从权威重算，失败则 failed |
@@ -281,6 +287,7 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 | `phase-2.1A.5-authority-fence-decision-closure.md` | 已按 P1-01..P1-05 修订；target identity；owner；源/派生事件；完成条件 | 一致 |
 | `phase-2.1A.7-delegation-membership-binding-audit.md` | 双端 Delegation binding；batch/completion 边界 | 一致 |
 | `phase-2.1A.8-authority-fence-source-identity-audit.md` | sourceKey/ID/Workspace/version 同时匹配；数值碰撞 fail closed | 一致 |
+| `phase-2.1A.9-authority-fence-record-consistency-audit.md` | Fence 内部字段一致；sourceKey 规范编码；旧版本 orphan/quarantine | 一致 |
 
 未发现需要重新引入 AD-06/AD-12 同步物化的理由；未把 `stored controlState` 当作授权事实；未把 Artifact owner 与 Task controller 合并。
 

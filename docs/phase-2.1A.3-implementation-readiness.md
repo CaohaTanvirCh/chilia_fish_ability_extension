@@ -141,7 +141,9 @@ Principal/Membership/Delegation 状态 + authority version
 - re-add/enable/new delegation/new explicit Grant 不能让旧目标跳过；新 explicit Grant 不免除旧 snapshot Grant 的撤销。
 - Artifact owner 只做 live ACL/审计，不是 Fence 物化目标；Reconcile 不得写 ownerPrincipalId。
 - 源级撤权事件在源 commit；`controller.frozen`/`artifact.grant_revoked` 是派生事件，幂等且不是授权前置。
-- Reconcile batch commit 与 Fence completion commit 分离；不要求所有批次同一事务；completion 失败可重试且不回滚批次。详见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；sourceKey/ID/Workspace/version 碰撞见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`。
+- Fence 字段一致性：sourceKey 规范编码，sourceKind/sourceKey/scope/principalId/delegationId 必须一致；不一致 -> quarantined，不得 completed。
+- 旧版本对象：低于 fence sourceVersion 必须有历史 Fence completed/物化或有效 frozen/revoked 证据，否则 orphan/quarantine，当前 Fence 不得 completed；高于 sourceVersion 不得覆盖。
+- Reconcile batch commit 与 Fence completion commit 分离；不要求所有批次同一事务；completion 失败可重试且不回滚批次。详见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；sourceKey/ID/Workspace/version 碰撞见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`；Fence 字段一致性/sourceKey 规范编码/旧版本 orphan 见 `docs/phase-2.1A.9-authority-fence-record-consistency-audit.md`。
 
 详细见 `docs/phase-2.1A.4-revocation-model-closure.md` 与 A5。
 

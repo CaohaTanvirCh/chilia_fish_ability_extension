@@ -204,6 +204,9 @@ SnapshotGrantTargetIdentity:
 - version 缺失/记录缺失/无法解析 -> fail closed。
 - 目标匹配使用 sourceKey 解析值 + sourceVersion；不是“某个 version 等于某个数字”。
 - 旧对象不会因 re-add/enable/new Delegation/new explicit Grant 自动改变 binding。
+- 对象 version < current fence sourceVersion：不属于当前 Fence；必须有历史 Fence completed/物化或有效 frozen/revoked 证据，否则 orphan/quarantine，当前 Fence 不得 completed。
+- 对象 version > current fence sourceVersion：不属于当前 Fence，但不得被当前 Fence 覆盖。
+- sourceKey 使用 Contracts 5.3.1 规范编码；非规范编码/字段不一致 -> `quarantined`，不得 completed/跳过目标。
 
 ---
 
@@ -219,9 +222,9 @@ SnapshotGrantTargetIdentity:
 | 6 | Task 的 controllerMembershipVersion 与其他 Workspace Membership version 都为 5 | `membership:ws1:U` V5 | Task.workspaceId=ws2、controllerMembership=5 | 是，但 Workspace 不同 | **否** | ws2 Task 仍按 ws2 授权 | 不处理 ws2 的 Task |
 | 7 | Grant grantee 与 source Delegation delegate 是不同 Principal，Membership version 都为 5 | `membership:ws:A` V5 | Grant.grantee=G/5；source D.delegate=A/5 | 都是 5 | **是（source delegate=A）** | Grant 由 source delegation 失效 | snapshot Grant revoked；grantee G 同 version 不扩大目标 |
 | 8 | source Delegation grantor/delegate Workspace 正确，Fence principalId 只匹配其中一端 | `principal:U` V3 | D.grantor=U/3；D.delegate=A/3，ws 正确 | 两端都是 3 | **是（grantor=U）** | Task frozen / Grant 无效 | Task frozen + Grant revoked；delegate 同 version 不扩大目标 |
-| 9 | Delegation ID 相同但 Delegation version 不匹配 | `delegation:D1` V5 | Task.controllerDelegationId=D1、version=4 | 否 | **否（对 V5 Fence）** | 当前 binding 仍可能因 version 不匹配 frozen | 该 Fence 不处理；由对应 V4 Fence/当前授权处理，不能乐观清除 |
+| 9 | Delegation ID 相同但 Delegation version 不匹配 | `delegation:D1` V5 | Task.controllerDelegationId=D1、version=4 | 否 | **否（对 V5 Fence）** | 当前 binding 仍可能因 version 不匹配 frozen | V5 Fence 不处理；V4 历史 Fence completed/物化才可跳过；无历史 Fence/证据则 orphan/quarantine，V5 不得 completed |
 | 10 | Delegation version 数值相同但 delegationId 不同 | `delegation:D1` V5 | Task.controllerDelegationId=D2、version=5 | 是，但 ID 不同 | **否** | D2 按自身状态判断 | 不处理 D2；不能仅凭 version 命中 |
-| 11 | Delegation 记录缺失、Workspace 不一致或 grantor/delegate ID 与引用不一致 | 任意 | 引用无法解析/不一致 | 不确定 | **是（fail closed 目标）** | frozen/fail closed | 不得 active；保持 pending/failed，不能乐观完成 |
+| 11 | Delegation 记录缺失、Workspace 不一致或 grantor/delegate ID 与引用不一致 | 任意 | 引用无法解析/不一致 | 不确定 | **是（fail closed 目标）** | frozen/fail closed | 不得 active；`quarantined`/manual，不能乐观完成 |
 | 12 | 同一 Task/Grant 同时命中两个不同 Fence，source identity 不同 | 例：`principal:U` V3 + `membership:ws:A` V5 | Task 同时含 U 的 Principal binding 与 A 的 Membership binding | 各自匹配各自 version | **两个 Fence 都是目标** | 并集拒绝 / frozen | 两个 Fence 各自完成；一个完成不清除另一个 |
 
 补充解释：
@@ -273,6 +276,7 @@ SnapshotGrantTargetIdentity:
 | `phase-2.1A.5-authority-fence-decision-closure.md` | target identity 含 workspace/ID/resolved Delegation；source identity/scope/version | 一致 |
 | `phase-2.1A.6-reconcile-target-identity-audit.md` | target identity 含 workspace/ID/resolved Delegation；条件不含 version-only | 一致 |
 | `phase-2.1A.7-delegation-membership-binding-audit.md` | 匹配矩阵改为 ID+Workspace+version；双端 binding | 一致 |
+| `phase-2.1A.9-authority-fence-record-consistency-audit.md` | Fence 内部字段一致；sourceKey 规范编码；旧版本 orphan/quarantine | 一致 |
 | `phase-2.0.3-implementation-constraints.md` | AD-12-R1 源级 commit；batch/completion 独立 | 一致 |
 
 搜索检查：
@@ -319,6 +323,8 @@ SnapshotGrantTargetIdentity:
 - **AD-06-R1 / AD-12-R1：FROZEN。**
 - **A7-P1-01 / A7-P1-02：保持关闭。**
 - **A6 target identity/owner/事件分层：继续有效。**
+- **A9 fence record consistency/旧版本覆盖：继续有效。**
+- **A9 fence record consistency/旧版本覆盖：继续有效。**
 - **OD-09：NEEDS_USER_DECISION（独立）。**
 - **代码实现：NOT APPROVED。**
 - **Phase 2.1B：未获批准。**

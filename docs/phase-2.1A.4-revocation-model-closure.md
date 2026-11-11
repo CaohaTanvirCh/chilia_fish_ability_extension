@@ -72,7 +72,7 @@
 AuthorityRevocationFence:
   fenceId
   sourceKind                 principal | membership | delegation
-  sourceKey                  principal:<id> / membership:<ws>:<pid> / delegation:<id>
+  sourceKey                  canonical sourceKey（Contracts 5.3.1）
   sourceVersion              number        // 被失效的 authority version（撤销/禁用前的版本）
   scope:
     kind                     global | workspace
@@ -82,14 +82,20 @@ AuthorityRevocationFence:
   cause                      disabled | deleted | revoked | expired
   effectiveAt                Timestamp
   authorizationRevision      number
-  status                     pending | reconciling | completed | failed
+  status                     pending | reconciling | completed | failed | quarantined
   processedTaskIds           string[]
   processedGrantIds          string[]
   lastError
+  quarantineReason           string | null
+  diagnostics                string[]      // bounded
   createdAt / completedAt
 ```
 
-- `sourceVersion` 是失效前版本（不是 revoke/disable 后的新 version），但 version 只是局部版本；匹配必须同时校验 sourceKey 解析出的 Principal/Membership/Delegation ID、Workspace（适用时）和对应 authority version。commit 后源记录 version 递增。
+- `sourceKey` 是规范身份编码；`principalId`/`delegationId`/`scope` 必须与解析结果一致。任一不一致 -> `quarantined`，不得 completed、不得跳过目标、不得静默改写。
+- sourceKey 的 ID 分量按 UTF-8 百分号编码；principal/membership/delegation 前缀与段数固定；拒绝非规范编码、空字段、重复分隔符、非法 `%`。
+- 冗余字段一致性：principal 要求 `principalId=解析值`、scope global、workspaceId=null、delegationId=null；membership 要求 workspaceId/principalId 均等于解析值、scope workspace、delegationId=null；delegation 要求 delegationId=解析值、principalId=null、workspace=权威 Delegation.workspaceId。任一不一致 -> quarantined。
+- `status=failed` 可重试；`quarantined` 需显式权威数据校验/修复，不能自动重试。
+- 旧版本对象：只有精确 sourceVersion 命中；低于 sourceVersion 的对象必须有历史 Fence completed/物化或有效 frozen/revoked 证据，否则 orphan/quarantine，当前 Fence 不得 completed；高于 sourceVersion 的对象不得被覆盖。
 - 源记录当前 status/version 仍是当前授权判据；Membership re-add、Principal enable 产生新 version，旧 fence 不命中新对象，也不会让旧 Controller/Delegation 复活。旧 Task 因绑定旧 version 保持 frozen，直到显式 `transferController`。
 - `scope.kind=global` 明确表示所有 Workspace，不是“未指定”。
 - fence 是失效事实和 reconcile 游标；源记录当前 status/version 判断当前请求是否失权，fence 的旧 `sourceVersion` 判断 Task/Grant 的绑定是否已被失效。任一失效即拒绝。
@@ -239,7 +245,7 @@ AND effectiveControlState(task) == active
 
 ### 3.2 规则
 
-- 启动扫描 `status != completed` 的 fence（含 `failed`），按 `authorizationRevision`、`fenceId` 排序。
+- 启动扫描 `pending/reconciling/failed` 的 fence（含 `failed`）；`quarantined` 不自动 retry，必须显式权威数据校验/修复。按 `authorizationRevision`、`fenceId` 排序。
 - 每批只写可枚举对象；批次 commit 原子；`processedTaskIds`/`processedGrantIds` 是幂等进度，不是授权判据。
 - 匹配前先解析 `sourceKey`：`principal:<principalId>`（global）、`membership:<workspaceId>:<principalId>`（workspace）、`delegation:<delegationId>`（workspace）。version 是局部版本，不能替代 ID/Workspace 匹配。
 - 条件更新：只冻结当前 controller 绑定仍匹配 fence `sourceKey/sourceVersion` 的 Task；只有显式 `transferController` 改变 binding 后才跳过，单纯 re-add/enable 不改变旧 Task binding，不得跳过。Principal fence 要求 Principal ID == fencePrincipalId 且对应 version == sourceVersion；Membership fence 要求 workspaceId == fenceWorkspaceId、Principal ID == fencePrincipalId 且对应 Membership version == sourceVersion；Delegation fence 要求 delegationId == fenceDelegationId 且 version == sourceVersion，并校验 Workspace。委托目标分别检查 grantor/delegate 两端的 ID/Workspace/version；ArtifactGrant 的 sourceDelegationId 非 null 时必须解析完整 Delegation binding。
@@ -248,10 +254,11 @@ AND effectiveControlState(task) == active
 - 完成：从权威状态重新扫描具体 Task/Grant target identity，全部目标 frozen/revoked，或存在针对具体对象的显式 transfer/revoke；不能仅凭 processed ids 乐观完成。`completed` 只表示当前 fence/sourceVersion/scope 的物化完成。completion commit 单独提交 `status=completed`、`completedAt`、`authorization.reconciled`；失败保持 pending/retry，不回滚已完成批次、不重复派生事件。
 - 重复撤权：同 source/version 返回已有 fence；新 version 才新建。
 - 绝不写 `controlState=active`，绝不恢复旧 controller，绝不自动创建/取消 Execution，绝不释放 Lease。
-- `failed` 不是终态；retry 包括 `pending/reconciling/failed`。
+- `failed` 可重试；`quarantined` 表示身份/作用域/历史覆盖无法证明，不能自动重试，必须显式权威数据校验/修复。
 - 多 fence 并发：一个 fence 完成不能清除另一个；effective 始终取并集。
 - Membership role 降低/变更使 version 变化时，旧 controller 立即 frozen；该路径不强制创建 fence，`Task.controlState` cache 可保持旧值，但 API/写入使用 effective。角色变更仍需审计事件 `membership.role_changed`。
-- 完成条件、重叠 Fence、失败恢复和 delegate 覆盖的完整规则见 `docs/phase-2.1A.5-authority-fence-decision-closure.md` 第 3 节；target identity 与操作影响矩阵见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`；Delegation 双端 Membership 与 batch/completion 边界见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`；不能仅凭 `processedTaskIds`/`processedGrantIds` 标记完成。
+- completion 还必须检查同 source identity、version < current sourceVersion 的旧对象：有历史 Fence completed/物化或有效 frozen/revoked 证据才可跳过；否则 orphan/quarantine，当前 Fence 不得 completed。version > sourceVersion 的对象不属于当前 Fence，但不得被覆盖。
+- 完整规则见 A5 第 3 节、A6 target identity、A7 双端 binding/batch、A8 source identity、A9 记录一致性/旧版本 Fence。
 - 扫描中发现的新对象若仍绑定旧 `sourceVersion`，必须纳入旧 Fence 或 fail closed；不能当作新对象跳过。
 
 ### 3.3 Controller 转移与撤权
