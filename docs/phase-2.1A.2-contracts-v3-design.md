@@ -414,9 +414,9 @@ AuthorityRevocationFence:
 
 | 来源 | sourceKey / sourceVersion | scope | 立即失效的授权 | reconcile 物化 |
 |---|---|---|---|---|
-| Principal | `principal:<principalId>` / 失效前 Principal.version | global（所有 Workspace） | Principal 的 Membership、Delegation、Controller、ArtifactGrant；作为 grantor/delegate/grantee 的关系均覆盖 | Membership stored（仅 delete）、Delegation.status、Task.controlState、**snapshot controller** ArtifactGrant.revokedAt；explicit/requester Grant 只做 effective ACL，不自动物理撤销 |
-| Membership | `membership:<ws>:<pid>` / 失效前 Membership.version | workspace | 该成员在本 Workspace 的权限、其作为 Controller/Delegation grantor/Delegation delegate 的 Task、其作为 grantee 或 source delegation grantor/delegate 的 ArtifactGrant | Task.controlState、**snapshot controller** ArtifactGrant.revokedAt；explicit/requester Grant 只做 effective ACL |
-| Delegation | `delegation:<delegationId>` / 失效前 Delegation.version | workspace | 该 Delegation 的权限、依赖它的 Task Controller/grant | Task.controlState、`sourceDelegationId` 匹配的 snapshot controller ArtifactGrant.revokedAt |
+| Principal | `principal:<encoded(principalId)>` / 失效前 Principal.version | global（所有 Workspace） | Principal 的 Membership、Delegation、Controller、ArtifactGrant；作为 grantor/delegate/grantee 的关系均覆盖 | Membership stored（仅 delete）、Delegation.status、Task.controlState、**snapshot controller** ArtifactGrant.revokedAt；explicit/requester Grant 只做 effective ACL，不自动物理撤销 |
+| Membership | `membership:<encoded(workspaceId)>:<encoded(principalId)>` / 失效前 Membership.version | workspace | 该成员在本 Workspace 的权限、其作为 Controller/Delegation grantor/Delegation delegate 的 Task、其作为 grantee 或 source delegation grantor/delegate 的 ArtifactGrant | Task.controlState、**snapshot controller** ArtifactGrant.revokedAt；explicit/requester Grant 只做 effective ACL |
+| Delegation | `delegation:<encoded(delegationId)>` / 失效前 Delegation.version | workspace | 该 Delegation 的权限、依赖它的 Task Controller/grant | Task.controlState、`sourceDelegationId` 匹配的 snapshot controller ArtifactGrant.revokedAt |
 
 **Fence 内部身份一致性（sourceKey 是规范来源）：**
 
@@ -436,6 +436,7 @@ AuthorityRevocationFence:
   - `principal:<encoded(principalId)>`
   - `membership:<encoded(workspaceId)>:<encoded(principalId)>`
   - `delegation:<encoded(delegationId)>`
+- `canonicalSourceKey("principal", principalId)` = `principal:<encoded(principalId)>`；membership/delegation 同理；禁止把解码后的 `<id>` 直接持久化。
 - 解析：按 `:` 分割，principal 必须 2 段、membership 3 段、delegation 2 段；每段严格百分号解码；空段/额外段/非法 `%`/小写十六进制/未编码的 `:` 都拒绝。
 - 解码后重新编码必须与输入段逐字节相等；sourceKey 比较使用完整规范字符串，不做大小写折叠、截断、Unicode 归一化或模糊匹配。
 - 创建 Fence 时若 ID 无法按上述规则编码，或 sourceKind 与前缀不一致，拒绝创建/进入 quarantine；不得把 ID 中的 `:` 直接拼入 sourceKey。
@@ -444,7 +445,7 @@ AuthorityRevocationFence:
 
 - **Fence 是持久的失效事实和 reconcile 游标，不是唯一的授权判据。** 源记录当前 status/version 判断当前请求是否失权；fence 的旧 `sourceVersion` 用于判断某个 Task/Grant 的绑定是否已被失效。两者任一判为失效即拒绝。
 - `sourceVersion` 是**被失效的旧版本**，不是 revoke/disable commit 后的新 version。version 是各记录的局部版本，不能单独用于跨主体匹配；必须同时匹配 sourceKey 的身份/作用域。
-- 匹配解析 `sourceKey`：`principal:<principalId>`（global）、`membership:<workspaceId>:<principalId>`（workspace）、`delegation:<delegationId>`（workspace）。比较时同时校验 Principal/Membership/Delegation 的 ID、Workspace（适用时）与对应 authority version；任一不一致即不匹配。
+- 匹配前按 5.3.1 解析 `sourceKey`：`principal:<encoded(principalId)>`（global）、`membership:<encoded(workspaceId)>:<encoded(principalId)>`（workspace）、`delegation:<encoded(delegationId)>`（workspace）。必须使用固定段数、严格百分号解码和重新编码一致性校验；不得直接 split 原始 ID。比较时同时校验 Principal/Membership/Delegation 的 ID、Workspace（适用时）与对应 authority version；任一不一致即不匹配。
 - 直接 controller：`controllerPrincipalId == fencePrincipalId && controllerPrincipalVersion == sourceVersion`（Principal）；`workspaceId == fenceWorkspaceId && controllerPrincipalId == fencePrincipalId && controllerMembershipVersion == sourceVersion`（Membership）。
 - 委托 controller：grantor/delegate 两端分别用 `grantorPrincipalId`/`delegatePrincipalId` + 对应 Principal version（Principal fence），以及 `grantorPrincipalId`/`delegatePrincipalId` + 对应 Membership version + 同一 Workspace（Membership fence）匹配。
 - Snapshot-controller Grant：grantee 以及 source Delegation 的 grantor/delegate 都必须按 ID + Workspace（Membership）/scope + version 匹配；只比较 `sourceDelegationVersion` 不足。
@@ -490,7 +491,7 @@ AND actor 自身 Membership 仍允许该 op
 AND Artifact ACL 仍允许（Artifact 场景）
 ```
 
-- `principalAuthorityValid(p)`：`status=active`、`deletedAt=null`，且不存在 `sourceKey=principal:<id>` 且 `sourceVersion=p.version` 的 fence。
+- `principalAuthorityValid(p)`：`status=active`、`deletedAt=null`，且不存在 `sourceKey=canonicalSourceKey("principal", p.id)` 且 `sourceVersion=p.version` 的 fence。
 - 对对象授权，仍必须比较 controller 绑定（Principal/Delegation ID + Workspace + version；snapshot-controller Grant 还包括 grantee/source delegation ID/Workspace + version）与 fence 的旧 `sourceVersion`；不能只看 version 数值或当前记录。
 - 任一版本不相等即拒绝；不能只看 stored `active` 或旧 `AuthorizationContext`。
 - `effectivePermission` 回答“某个 Principal 现在能否做某个操作”，不回答“旧 Controller 是否仍能继续控制”；后者见 6.1 的 `effectiveControlState`。

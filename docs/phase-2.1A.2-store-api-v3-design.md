@@ -239,7 +239,7 @@ readAuthorized(context, query) -> filtered snapshot page
 ```text
 principalAuthorityValid(p) =
   p.status=active && p.deletedAt=null
-  && no fence(sourceKey=principal:<p.id>, sourceVersion=p.version)
+  && no fence(sourceKey=canonicalSourceKey("principal", p.id), sourceVersion=p.version)
 
 controllerAuthorityValid(task) =
   principalAuthorityValid(task.controllerPrincipalId)

@@ -67,11 +67,13 @@ delegateMembershipVersion == sourceVersion
 
 ### 1.1 SourceKey 解析
 
-| sourceKind | sourceKey | scope | 解析字段 |
-|---|---|---|---|
-| principal | `principal:<principalId>` | global | `principalId` |
-| membership | `membership:<workspaceId>:<principalId>` | workspace | `workspaceId` + `principalId` |
-| delegation | `delegation:<delegationId>` | workspace | `delegationId`；workspace 从权威 Delegation 记录解析 |
+| sourceKind | sourceKey（实际存储） | scope | 解析字段 | 逻辑身份（解码后，仅展示） |
+|---|---|---|---|---|
+| principal | `principal:<encoded(principalId)>` | global | `principalId` | `principal:<principalId>` |
+| membership | `membership:<encoded(workspaceId)>:<encoded(principalId)>` | workspace | `workspaceId` + `principalId` | `membership:<workspaceId>:<principalId>` |
+| delegation | `delegation:<encoded(delegationId)>` | workspace | `delegationId`；workspace 从权威 Delegation 记录解析 | `delegation:<delegationId>` |
+
+- 实际存储/比较必须使用 A9/Contracts 5.3.1 的规范编码；最后一列只是解码后的逻辑表示，不是可直接持久化的 sourceKey。
 
 - `sourceVersion` 是失效前版本，不是 commit 后新版本。
 - `sourceVersion` 只在对应 source identity 下有意义；不能跨 Principal/Workspace/Delegation 比较。
@@ -82,22 +84,24 @@ delegateMembershipVersion == sourceVersion
 ```text
 principalMatches(fence, principalId, principalVersion):
   fence.sourceKind == principal
-  AND principalId == parse(fence.sourceKey).principalId
+  AND principalId == canonicalParse(fence.sourceKey).principalId
   AND principalVersion == fence.sourceVersion
   // global：不限制 Workspace
 
 membershipMatches(fence, workspaceId, principalId, membershipVersion):
   fence.sourceKind == membership
-  AND workspaceId == parse(fence.sourceKey).workspaceId
-  AND principalId == parse(fence.sourceKey).principalId
+  AND workspaceId == canonicalParse(fence.sourceKey).workspaceId
+  AND principalId == canonicalParse(fence.sourceKey).principalId
   AND membershipVersion == fence.sourceVersion
 
 delegationMatches(fence, delegationId, delegationVersion, workspaceId):
   fence.sourceKind == delegation
-  AND delegationId == parse(fence.sourceKey).delegationId
+  AND delegationId == canonicalParse(fence.sourceKey).delegationId
   AND delegationVersion == fence.sourceVersion
   AND workspaceId == resolvedDelegation.workspaceId
 ```
+
+`canonicalParse` 必须使用 Contracts 5.3.1 的固定段数、严格百分号解码和重新编码一致性校验；解析失败/非规范 -> fail closed/`quarantined`，不得按逻辑身份展示值直接 split。
 
 - 谓词返回 false 不等于对象 active；还要执行当前 status/authority 检查。
 - 解析失败、字段缺失、Workspace 不一致 -> fail closed，不能按 active 或“非目标”处理。
@@ -323,7 +327,6 @@ SnapshotGrantTargetIdentity:
 - **AD-06-R1 / AD-12-R1：FROZEN。**
 - **A7-P1-01 / A7-P1-02：保持关闭。**
 - **A6 target identity/owner/事件分层：继续有效。**
-- **A9 fence record consistency/旧版本覆盖：继续有效。**
 - **A9 fence record consistency/旧版本覆盖：继续有效。**
 - **OD-09：NEEDS_USER_DECISION（独立）。**
 - **代码实现：NOT APPROVED。**

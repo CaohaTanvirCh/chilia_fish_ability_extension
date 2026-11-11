@@ -157,7 +157,7 @@ AuthorityRevocationFence:
 ```text
 principalAuthorityValid(p) =
   p.status=active && p.deletedAt=null
-  && no fence(sourceKey=principal:<p.id>, sourceVersion=p.version)
+  && no fence(sourceKey=canonicalSourceKey("principal", p.id), sourceVersion=p.version)
 
 membershipAuthorityValid(p, ws) =
   membership(p, ws).status=active
@@ -247,7 +247,7 @@ AND effectiveControlState(task) == active
 
 - 启动扫描 `pending/reconciling/failed` 的 fence（含 `failed`）；`quarantined` 不自动 retry，必须显式权威数据校验/修复。按 `authorizationRevision`、`fenceId` 排序。
 - 每批只写可枚举对象；批次 commit 原子；`processedTaskIds`/`processedGrantIds` 是幂等进度，不是授权判据。
-- 匹配前先解析 `sourceKey`：`principal:<principalId>`（global）、`membership:<workspaceId>:<principalId>`（workspace）、`delegation:<delegationId>`（workspace）。version 是局部版本，不能替代 ID/Workspace 匹配。
+- 匹配前按 Contracts 5.3.1 规范编码/解析 `sourceKey`：`principal:<encoded(principalId)>`（global）、`membership:<encoded(workspaceId)>:<encoded(principalId)>`（workspace）、`delegation:<encoded(delegationId)>`（workspace）。必须固定段数、严格百分号解码、重新编码一致性校验；不得直接 split 原始 ID。version 是局部版本，不能替代 ID/Workspace 匹配。
 - 条件更新：只冻结当前 controller 绑定仍匹配 fence `sourceKey/sourceVersion` 的 Task；只有显式 `transferController` 改变 binding 后才跳过，单纯 re-add/enable 不改变旧 Task binding，不得跳过。Principal fence 要求 Principal ID == fencePrincipalId 且对应 version == sourceVersion；Membership fence 要求 workspaceId == fenceWorkspaceId、Principal ID == fencePrincipalId 且对应 Membership version == sourceVersion；Delegation fence 要求 delegationId == fenceDelegationId 且 version == sourceVersion，并校验 Workspace。委托目标分别检查 grantor/delegate 两端的 ID/Workspace/version；ArtifactGrant 的 sourceDelegationId 非 null 时必须解析完整 Delegation binding。
 - 已 frozen/已 revoked 的对象跳过，不追加重复派生 Event；源级事件在撤权 commit，`controller.frozen`/`artifact.grant_revoked`/`authorization.reconciled` 是 Reconcile 派生事件。
 - 崩溃恢复：从进度继续；未记录批次可重做；每个 batch commit 原子；batch commit 与 completion commit 分离，不要求所有批次同一事务。
