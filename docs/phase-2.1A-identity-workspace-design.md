@@ -17,6 +17,8 @@
 本文件不是 Phase 2.1A 的实现验收，也不把下列设计描述成仓库已有能力。当前仓库仍然是 Phase 1.1 的单 stdio、无 Principal、无 Workspace 模型；本文件定义的是 v3 的目标边界。
 
 > **Phase 2.1A.1 补充：** 第 19 节新增 IW-09（Windows Workspace root 路径边界）、IW-10（Local Bootstrap 权限范围）、IW-11（Membership stored/effective 状态）。第 19 节与前面段落冲突时以第 19 节为准；本轮仍只改文档，不实现。
+>
+> **Phase 2.1A.4 更新：** 本文第 4.6/6.7 等节中“撤权事务在同一 commit 枚举所有受影响 Task 并置 frozen”的措辞，由 `docs/phase-2.1A.4-revocation-model-closure.md` 的 authority version + `AuthorityRevocationFence` + 异步物化语义取代；授权交集、可见性与生命周期结论仍有效。AD-06/AD-12 的字面同事务物化边界见该文件 OD-11。
 
 ---
 
