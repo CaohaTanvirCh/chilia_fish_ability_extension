@@ -7,6 +7,8 @@
 - `docs/phase-2.0.2-architecture-decisions.md`（本轮 AD-06 至 AD-11 修订）
 
 > Phase 2.0.3 又补充了 AD-12 至 AD-14，见 `docs/phase-2.0.3-implementation-constraints.md`；本报告保留为 2.0.2 的历史审查记录。
+>
+> **Phase 2.1A.5 更新：** 用户已冻结 Authority Version + Fence + Effective 派生方案。AD-06-R1 将 Controller **冻结**的 snapshot Grant 改为“Fence 立即 effective 无效、`revokedAt` 异步物化”；显式 Controller 转移仍同事务。AD-08 的 v3 实现不暴露同一 controller 的 `unfreezeController`，只允许 `transferController`。本报告第 2.1/2.3 节的旧措辞按此更新；详见 `docs/phase-2.1A.5-authority-fence-decision-closure.md`。
 
 审查性质：只读文档审查与设计修订；未修改业务代码、Contracts、Store、Executor、ACP Transport、测试或配置。
 
@@ -38,7 +40,7 @@ Phase 2.0.1 同时声称 Artifact 是“创建时快照”，又允许 private A
 - Artifact 创建事务中物化 `ownerPrincipalId`、`visibility`、requester/controller 的 ArtifactGrant；
 - 读取时只看 Artifact ACL，不再查当前 Task 角色；
 - Task owner 转移不自动转移 Artifact；发送 `artifact.access_review_required`；
-- Task controller 转移/冻结时，只自动撤销/重建 `origin=task-snapshot-controller` grant；
+- Task controller 转移时，旧 `origin=task-snapshot-controller` grant 同事务撤销、新 controller 创建新 grant；Task controller **冻结/撤权**时，snapshot grant 由 Fence 立即 effective 无效，`revokedAt` 异步物化（AD-06-R1）；
 - Task visibility 改变不自动改 Artifact；
 - Artifact owner/grantee 失去 Workspace 成员资格时访问暂停，由 Owner/Admin 显式处理。
 
@@ -84,11 +86,11 @@ Phase 2.0.1 只说“撤销后立即失效”，没有定义：
 **修订（AD-08）：**
 
 - revoke/expire/membership loss/principal disable 等触发授权失效；
-- 关联 Task 的 `controlState=frozen`，保留 controller ID 用于审计，但撤销控制权；
+- 关联 Task 的 effective `controlState=frozen`；stored `controlState` 是可滞后 cache；保留 controller ID 用于审计，但撤销控制权；
 - 运行中 Execution 不自动取消，由 Hub/Executor 继续到真实终态；Agent 立即失去读取/订阅；
 - queued Execution 不自动 dispatch；
-- controller 的 `origin=task-snapshot-controller` ArtifactGrant 撤销；
-- Owner/Admin 通过显式 `transferController`/`unfreezeController` 接管；
+- controller 的 `origin=task-snapshot-controller` ArtifactGrant 立即 effective 无效；`revokedAt` 异步物化；
+- Owner/Admin 通过显式 `transferController` 接管；v3 不暴露同一 controller 的 `unfreezeController`；
 - 用 `authorizationEpoch` 检查入口和提交前授权，避免撤权竞态写入；
 - 记录 delegation/controller/Artifact grant 事件。
 

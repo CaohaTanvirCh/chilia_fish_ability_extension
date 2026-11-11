@@ -18,7 +18,7 @@
 
 > **Phase 2.1A.1 补充：** 第 19 节新增 IW-09（Windows Workspace root 路径边界）、IW-10（Local Bootstrap 权限范围）、IW-11（Membership stored/effective 状态）。第 19 节与前面段落冲突时以第 19 节为准；本轮仍只改文档，不实现。
 >
-> **Phase 2.1A.4 更新：** 本文第 4.6/6.7 等节中“撤权事务在同一 commit 枚举所有受影响 Task 并置 frozen”的措辞，由 `docs/phase-2.1A.4-revocation-model-closure.md` 的 authority version + `AuthorityRevocationFence` + 异步物化语义取代；授权交集、可见性与生命周期结论仍有效。AD-06/AD-12 的字面同事务物化边界见该文件 OD-11。
+> **Phase 2.1A.4/2.1A.5 更新：** 本文第 4.6/6.7 等节中“撤权事务在同一 commit 枚举所有受影响 Task 并置 frozen”的措辞，由 `docs/phase-2.1A.4-revocation-model-closure.md` 与 `docs/phase-2.1A.5-authority-fence-decision-closure.md` 的 authority version + `AuthorityRevocationFence` + 异步物化语义取代；授权交集、可见性与生命周期结论仍有效。OD-11 已由用户选择方案 A 冻结，AD-06-R1/AD-12-R1 已记录。
 
 ---
 
@@ -400,10 +400,10 @@ MembershipInvite:
 #### 移除
 
 - Owner/Admin 可以移除非 Owner 成员；Admin 不能移除 Owner 或其他 Admin（只有 Owner 能调整 Admin）。
-- 移除是原子的：Membership stored `revoked`、追加 `MembershipRevision`、`authorizationRevision+1`、相关 Delegation revoked、controller Task frozen、事件。
-- 该主体作为 **grantee** 的 ArtifactGrant 在同一事务中撤销；其作为 grantor 已授予他人的 ArtifactGrant 不自动撤销，除非该主体同时是 Artifact owner 或 Workspace Owner/Admin，且安全处置要求撤销。撤销/保留必须在事件中可见。
+- 移除是原子的：Membership stored `revoked`、追加 `MembershipRevision`、`authorizationRevision+1`、相关 Delegation effective revoked、controller Task effective frozen、Fence、事件。
+- 该主体作为 **snapshot-controller grantee** 的 ArtifactGrant 立即 effective 无效，`revokedAt` 可异步物化；其作为 grantee 的 explicit/requester Grant 按 live ACL 暂停，不自动写 `revokedAt`；其作为 grantor 已授予他人的 explicit Grant 不自动撤销，除非显式 revoke 或独立 ACL 变化。撤销/保留必须在事件中可见。
 - 移除不得删除该主体的 Task、Execution 或 Artifact；只撤销访问。
-- 移除后重新添加不会自动恢复旧 Delegation 或旧 ArtifactGrant；必须重新授权。
+- 移除后重新添加不会自动恢复旧 Delegation；snapshot-controller Grant 不自动恢复；未被显式 revoke 的 explicit/requester Grant 按 live ACL 恢复，除非另有安全处置。
 
 #### 失效
 
@@ -584,14 +584,14 @@ Phase 2.1A **禁止** Agent 向其他 Agent 再委托：
 7. 不取消 running Execution，不伪造终态；
 8. 不自动删除 queued Execution；它保持 queued，不能自动 dispatch。
 
-受影响的 Task 集合必须由 Store 在事务内枚举；不能先撤 grant、后异步冻结。当前 v2 Store 的 `maxTasks=1000` 是这个批量事务的现实上限；如果未来提高上限，必须重新评估事务容量（见 16 节 P1）。
+受影响的 Task 集合不需要在撤权事务内枚举；authority version/Fence 使 effective frozen，Reconcile 异步物化 `Task.controlState`。当前 v2 Store 的 `maxTasks=1000` 仍是容量评估背景，但不再是“单事务枚举全部 Task”的要求（见 A5）。
 
 #### Membership/Principal 失效
 
-- Membership revoked、角色降到 operator 以下、Principal disabled/deleted 时，所有相关 Delegation 在同一事务中撤销或失效；
-- controller Task 冻结；
+- Membership revoked、角色降到 operator 以下、Principal disabled/deleted 时，所有相关 Delegation 立即 effective 失效；stored `revoked` 可异步物化；
+- controller Task effective frozen；
 - 运行中 Execution 继续；
-- 不允许“先恢复成员资格，再自动恢复旧委托”。
+- 不允许“先恢复成员资格，再自动恢复旧委托/旧 controller”。
 
 ### 6.8 Owner/Admin 接管被冻结的 Task
 

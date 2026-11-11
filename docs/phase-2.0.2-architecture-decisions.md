@@ -7,6 +7,8 @@
 范围：只修订设计文档，不实现代码，不修改 Contracts、Store、Executor、ACP Transport 或测试。
 
 > **Phase 2.0.3 补充：** AD-12 至 AD-14 见 `docs/phase-2.0.3-implementation-constraints.md`。AD-12 收紧 AD-08 的授权检查，AD-13 收紧 AD-11 的强制释放，AD-14 修正 AD-07 的 interrupted 聚合；与本文件冲突时以 2.0.3 为准。
+>
+> **Phase 2.1A.5 修订（AD-06-R1）：** 用户已选择 Authority Version + Revocation Fence + Effective 派生方案。Controller 冻结的权威效果与撤权 Fence 同事务提交；snapshot controller ArtifactGrant 由 Fence 立即失效，物理 `revokedAt` 可异步物化。显式 Controller 转移、显式 ArtifactGrant、owner/visibility 变化仍按本文件原有独立规则处理，不因本次修订扩大为“所有 Artifact ACL 都可延迟”。详见 `docs/phase-2.1A.5-authority-fence-decision-closure.md` 第 2 节。
 
 本文件新增 **AD-06 至 AD-11**，并修正 Phase 2.0.1 中容易产生隐性矛盾的六处边界：
 
@@ -69,16 +71,19 @@ ArtifactGrant[]:
 | Task archive/delete | 不变 | 不变 | 不变 | 不变 | Artifact 有独立生命周期，不随 Task 删除 |
 | Task 恢复 | 不变 | 不变 | 不变 | 不变 | 不自动恢复已撤销的 grant |
 
+- Controller 冻结行的“撤销”首先指 effective 授权立即无效；`ArtifactGrant.revokedAt` 的物理物化按 1.3/AD-06-R1 异步完成，不等待 reconcile 才拒绝读取。
 - Task owner 转移后，旧 owner 仍是 Artifact owner；这是有意的“Artifact 独立所有权”。需要转移时使用显式 `transferArtifact`。
 - Controller 转移的自动同步只针对 `origin=task-snapshot-controller` 的 grant；显式授予旧 controller 的 grant 不会自动撤销，必须显式 revoke。
 - Artifact owner 和 grantee 必须是 active Workspace 成员；成员被撤销后访问自动暂停，不能靠旧的 owner 字段继续读取。Workspace Owner/Admin 可显式转移 Artifact owner。
 - Workspace Owner/Admin 始终有审计读取权，但不能绕过 Artifact 的写入/分享限制；管理操作必须审计。
 - Artifact 所有权独立于 Task controller。Controller 冻结不会静默转移 Artifact owner；如果被冻结的 controller 同时是 Artifact owner，Workspace Owner/Admin 必须显式审核/转移，不能把“冻结控制权”误认为“自动收回 Artifact 所有权”。
 
-### 1.3 并发和事务
+### 1.3 并发和事务（AD-06-R1）
 
 - 创建 Artifact、写入 owner/visibility、创建 requester/controller grants 必须在**同一事务**完成；不能出现 Artifact 已存在但 ACL 未建立的窗口。
-- Controller 转移/冻结和对应 ArtifactGrant 变更必须在同一事务；失败则两者都不生效。
+- **显式 Controller 转移**：controller 字段、旧 controller snapshot Grant 撤销、新 controller snapshot Grant 创建仍必须在同一事务；失败则都不生效。
+- **Controller 冻结/撤权**：权威撤权记录、authority version、`authorizationRevision` 和审计事件必须在同一 commit；`origin=task-snapshot-controller` 的 ArtifactGrant 因 Fence/authority version 立即 effective 无效，即使 `revokedAt` 尚未物化。Fence/reconcile 只负责把 `revokedAt` 写到投影，reconcile 未完成不能成为继续读取的理由。
+- **显式 ArtifactGrant 操作**（grant/revoke）、Artifact owner 转移、`Task.visibility` 变化、Task archive/delete 仍按本文件其他规则独立处理；不得以“等待 reconcile”为由延迟这些显式操作的授权效果。
 - `Task.visibility` 改变只追加 `artifact.access_review_required` 事件，不修改 Artifact。
 - 读取时若 Artifact ACL 与当前 Task 角色不一致，不自动修正；返回 Artifact 自己的 ACL 结果。
 
@@ -202,11 +207,12 @@ executionSummary =
 
 1. 所有使用该 grant 的认证上下文、短期 token、订阅和未开始命令立即失效；新命令必须重新认证。
 2. 该 grant 关联的 Task：
-   - `Task.controlState` 从 `active` 变为 `frozen`；
+   - `effectiveControlState` 立即变为 `frozen`；stored `Task.controlState` 是可滞后物化 cache；
    - `controllerFrozenReason=delegation_revoked|delegation_expired|membership_revoked|principal_disabled|scope_revoked`；
    - `controllerFrozenAt` 记录时间；
    - `controllerPrincipalId` 保留用于审计，但不再有执行/取消/选择/完成/转移权限；
-   - `controllerDelegationId` 指向失效 grant。
+   - `controllerDelegationId` 指向失效 grant；
+   - controller 的 Principal/Membership/Delegation authority version 绑定失效。
 3. **不自动取消正在运行的 Execution。** Hub/Executor 继续把已开始的执行带到终态或 unknown，结果仍持久化；Agent 立即失去读取、订阅和 Artifact grant，不能再发命令。
 
 Task 需要增加以下控制字段：
@@ -214,12 +220,12 @@ Task 需要增加以下控制字段：
 ```text
 delegationId             创建 Task 时的委托来源（可空）
 controllerDelegationId   当前 Controller 的委托来源（可空）
-controlState             active | frozen
+controlState             active | frozen（stored cache；effective 由 authority version 派生）
 controllerFrozenReason
 controllerFrozenAt
 ```
 4. queued Execution 保持 queued，不自动 dispatch；Owner/Admin 可以取消、重新分配或等待新的合法 controller。
-5. 该 controller 的 `origin=task-snapshot-controller` ArtifactGrant 在同一事务撤销；其他显式 grants 保留，除非单独撤销。
+5. 该 controller 的 `origin=task-snapshot-controller` ArtifactGrant 立即 effective 无效；`revokedAt` 的物理物化可异步完成。其他显式 grants 保留，除非单独撤销。
 6. 该 grant 相关的事件订阅和游标失效；后续读取返回 `AUTHORIZATION_REVOKED`，不能返回旧数据。
 
 ### 3.3 Controller 冻结的语义
@@ -234,7 +240,7 @@ controllerFrozenAt
 - `frozen` Task 仍可被 Owner/Admin 读取和审计；
 - controller Agent 失去由该 controller 身份派生的 private Task 读取权；如果它同时是 Task owner/requestedBy 或持有独立有效 grant，按 AD-03 保留相应权限，但不能再使用 controller 权限；
 - 运行中 Execution 的结果继续由 Hub 保存，但不推送给已撤销的 Agent；
-- Owner/Admin 可以显式 `transferController` 或 `unfreezeController`；这需要新的有效成员/委托，并产生审计事件；
+- Owner/Admin 可以显式 `transferController`；v3 不暴露同一 controller 的 `unfreezeController`。恢复控制必须重新绑定新的有效 controller/authority version，并产生审计事件；
 - 撤销 grant 不等于自动恢复旧的 controller；必须显式转移。
 
 ### 3.4 竞态：命令在执行中撤权

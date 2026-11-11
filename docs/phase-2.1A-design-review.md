@@ -4,6 +4,8 @@
 
 日期：2026-11-10（Asia/Hong_Kong）
 
+> **Phase 2.1A.5 更新：** OD-11 已由用户选择方案 A 冻结；AD-06-R1/AD-12-R1 已记录。本报告第 4.3/6.2 节的“同一事务枚举所有 Task”为历史审查背景，已被 authority version + Fence + 异步物化取代；详见 `docs/phase-2.1A.5-authority-fence-decision-closure.md`。
+
 本轮复核：**Phase 2.1A.1 docs-only refinement**（Windows root path boundary、Local Bootstrap scope、Membership stored/effective state）。
 
 审查对象：`docs/phase-2.1A-identity-workspace-design.md`
@@ -122,7 +124,7 @@ commitAuthorized(context, operation, target, input)
 | 终态 Execution 不可覆盖 | 是 | 撤权/停用/成员移除都不改 Execution 终态；只冻结 Controller |
 | unknown/interrupted 不自动重发 | 是 | 撤权和过期不创建新 Execution；queued 不自动 dispatch |
 | 单 Store 所有者 | 是 | `commitAuthorized` 仍在单 Store 临界区；没有第二写入者 |
-| 原子 commit | 是 | 身份/成员/委托与业务状态同一事务 |
+| 原子 commit | 是 | 身份/成员/委托的权威状态与 Fence 同一事务；派生投影按 A5 异步 |
 | 事件单调序列 | 是 | 身份/成员/委托事件进入统一 sequence；不重写历史 |
 | 不承诺 exactly-once | 是 | 第 4.2 节明确 commit 与外部 transport 的窗口 |
 | 不伪造终态 | 是 | 撤权不把 running 改 cancelled；unknown 保持 unknown |
@@ -229,6 +231,8 @@ Phase 1.1 的 `startExecution` 会检查 `unresolvedExecutionIds` 并要求显�
 **结论：接受语义 A；必须在实现文档/测试中保留该边界说明。**
 
 ### 4.3 撤权事务的批量化
+
+> **Phase 2.1A.5 更新：** 本节关于“在同一事务冻结所有关联 Task”的要求由 OD-11 方案 A、AD-06-R1/AD-12-R1 取代：撤权 commit 原子写权威状态/Fence/authRev，派生 `Task.controlState`/`ArtifactGrant.revokedAt` 可异步物化。以下容量分析保留为历史背景，不再作为字面实现要求；详见 `docs/phase-2.1A.5-authority-fence-decision-closure.md`。
 
 设计要求撤销 Delegation 时在同一事务冻结所有关联 Task。当前 v2 Store 的 `maxTasks=1000`，理论上可在一个 JSON 快照中完成，但：
 
@@ -373,10 +377,11 @@ IW-09 明确 `realpath` + 字符串前缀不足以证明 containment：
 
 #### P1-01 批量撤权事务容量
 
-- **问题**：一个 grant 可能关联大量 Task；撤销必须在同一事务冻结全部 controller Task，并撤销 snapshot ArtifactGrant。
-- **影响**：可能超过 Store 容量/事件上限；拆事务会留下中间窗口。
-- **要求**：Store v3 设计必须给出最大影响集、容量拒绝、原子失败和事件合并策略；测试并发撤权。
-- **状态**：未关闭。
+- **历史问题**：旧方案要求一个 grant 在同一事务冻结全部 controller Task 并撤销 snapshot ArtifactGrant。
+- **A5 决策**：已改为 Authority Version + Fence + Effective 派生；撤权 commit 不枚举全部 Task/Grant，容量问题转移到 Fence/Reconcile 批处理。
+- **影响**：Reconcile 仍需容量上限、批处理、幂等和完整性验证；不能把“异步”当作无容量约束。
+- **要求**：Store v3 设计给出 Fence/Reconcile 最大批次、容量拒绝、原子失败和事件合并策略；测试并发撤权/重叠 Fence。
+- **状态**：设计决策已冻结；实现/容量测试未关闭。
 
 #### P1-02 过期物化
 

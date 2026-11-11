@@ -11,6 +11,8 @@
 2. WorkspaceLease 强制释放的 fencing / 进程停止证据（关闭 AD-11 的旧进程并发写风险）；
 3. `interrupted` 的 Task 状态聚合与新一轮风险确认（修正 AD-07 的过渡）。
 
+> **Phase 2.1A.5 修订（AD-12-R1）：** 用户已选择 Authority Version + Revocation Fence + Effective 派生方案。AD-12 的“同一 commit”指**最终授权检查 + 本次权威状态变更（源 status/version、Fence、authorizationRevision、审计事件）**；不要求在同一 commit 同步写所有派生 `Task.controlState`/`ArtifactGrant.revokedAt`。派生投影可异步物化，但撤权 commit 成功后旧权限立即不可用，reconcile 未完成不得放行。详见 `docs/phase-2.1A.5-authority-fence-decision-closure.md` 第 1/2 节；AD-12 的其他要求（单 Store 临界区、不得先 authorize 再 commit、入口检查不是证明）不变。
+
 这三项通过后，Phase 2.0 设计可以正式冻结；本文件不开启 Phase 2.1A 或 2.1B 的实现。
 
 ## 0. 补充摘要
@@ -86,20 +88,22 @@ workspacePolicyVersion
 - 用调用方传入的 `principalId`、`delegationId` 或 `authorized=true` 作为授权证明；
 - 只在 Hub 入口做一次检查。
 
-### 1.4 撤权事务
+### 1.4 撤权事务（AD-12-R1）
 
-撤销 Delegation 本身也必须是一个原子事务，至少同时写入：
+撤销 Principal/Membership/Delegation 的权威状态必须是一个原子事务，至少同时写入：
 
 ```text
-DelegationGrant.revokedAt
+Principal/Membership/Delegation 的权威 status + authority version
+AuthorityRevocationFence(sourceVersion=失效前版本, scope)
 authorizationRevision + 1
-Task.controlState = frozen（受影响的 Task）
-Task.controllerFrozenReason / controllerFrozenAt
-受影响的 ArtifactGrant 撤销（AD-06）
-delegation.revoked / controller.frozen 事件
+对应授权/成员/委托/Controller 冻结的审计事件
 ```
 
-这些变更必须全部成功或全部不生效。不能先撤 grant、后冻结 Task，也不能先冻结 Controller、后撤 grant，否则中间窗口仍可能被命令利用。
+- 这些**权威记录**必须全部成功或全部不生效；不能先撤源状态、后写 Fence，也不能先写 Fence、后撤源状态。
+- `Task.controlState`、`Task.controllerFrozenReason/At`、`ArtifactGrant.revokedAt` 等派生投影允许异步 Reconcile；它们不是授权事实来源。
+- 撤权 commit 成功后，所有读、写、Replay、Artifact 读取、Event 读取和 Execution 控制都必须依据当前源 status/version + Fence 立即拒绝旧权限，即使投影仍是 `active`/`revokedAt=null`。
+- Reconcile 失败、崩溃、部分完成时，权威 Fence 仍有效；恢复后幂等重试，不得因投影未完成而回退授权。
+- 已经提交的 `dispatch_intent` 不因后续撤权被伪造为取消；运行中的 Execution 不自动取消，其结果/通知投递仍须按当前读取权限重新授权。
 
 ### 1.5 AD-12 验收条件
 
@@ -108,7 +112,8 @@ delegation.revoked / controller.frozen 事件
 - 授权检查与 commit 分离；
 - 授权状态不在同一个 Store 事务中；
 - 入口通过即发送 transport；
-- 撤权/冻结/grant 撤销分成多个独立事务；
+- 权威撤权状态与 Fence 分成多个事务；
+- 把派生 `Task.controlState`/`ArtifactGrant.revokedAt` 当作授权判据；
 - 通过客户端 payload 传递 actor 身份。
 
 ## 2. AD-13：WorkspaceLease 强制释放的安全前提

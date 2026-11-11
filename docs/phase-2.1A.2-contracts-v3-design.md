@@ -178,7 +178,7 @@ stateDiagram-v2
 | Task controller | effective frozen；stored `controlState` 可滞后 | effective frozen |
 | running Execution | 继续；按真实 ACP 证据结算 | 继续；按真实 ACP 证据结算 |
 | Artifact owner | 保留；读取/写入按 Artifact ACL 拒绝，需审计处置 | 保留；需转移 |
-| ArtifactGrant | effective 无效；`revokedAt` 可滞后 | effective 无效，物化为 revoked |
+| ArtifactGrant | snapshot-controller effective 无效、`revokedAt` 可滞后；explicit/requester 按 live ACL 暂停 | 同 disabled；snapshot-controller 物化 revoked，explicit/requester 不自动写 revokedAt |
 
 - “有效权限失效”不等于“Task 取消”“Execution 取消”或“Artifact 删除”。Principal 失效只撤权，不伪造执行终态。
 - Owner/requestedBy 失效不会自动冻结一个仍由其他合法 Controller 控制的 Task；但 Owner 必须由 Owner/Admin 显式转移，不能继续行使 owner 权限。
@@ -334,7 +334,7 @@ else:                                       active
 
 - “matching fence”指 `fence.sourceKind/sourceKey/sourceVersion` 与该 Membership/Principal 当前记录完全匹配；re-add/新 version 不会命中旧 fence。
 - 授权只看 effective；`WorkspaceMember.status` 只是 stored。
-- `version` 是 authority version：role、stored status、re-add 必须递增；仅显示性元数据变化不应递增。Task/Delegation/ArtifactGrant 的 controller/grantee 绑定使用该 version（见 5.2、6.1、8.1）。
+- `version` 是 authority version：role、stored status、re-add 必须递增；仅显示性元数据变化不应递增。Task/Delegation 的 controller/grantor/delegate 绑定使用该 version；ArtifactGrant 仅 `origin=task-snapshot-controller` 使用 grantee version 绑定（见 5.2、6.1、8.1）。
 - Role 变化可能使 controller 不再有控制权限：version 变化使旧绑定立即失效，即使没有单独的 revocation fence；该变化记录为 `membership.role_changed`，不是 `membership.removed`。
 
 角色约束：
@@ -412,9 +412,9 @@ AuthorityRevocationFence:
 
 | 来源 | sourceKey / sourceVersion | scope | 立即失效的授权 | reconcile 物化 |
 |---|---|---|---|---|
-| Principal | `principal:<principalId>` / 失效前 Principal.version | global（所有 Workspace） | Principal 的 Membership、Delegation、Controller、ArtifactGrant | Membership stored（仅 delete）、Delegation.status、Task.controlState、ArtifactGrant.revokedAt |
-| Membership | `membership:<ws>:<pid>` / 失效前 Membership.version | workspace | 该成员在本 Workspace 的权限、其作为 Controller 的 Task、其作为 grantee 的 ArtifactGrant | Task.controlState、ArtifactGrant.revokedAt |
-| Delegation | `delegation:<delegationId>` / 失效前 Delegation.version | workspace | 该 Delegation 的权限、依赖它的 Task Controller/grant | Task.controlState、ArtifactGrant.revokedAt |
+| Principal | `principal:<principalId>` / 失效前 Principal.version | global（所有 Workspace） | Principal 的 Membership、Delegation、Controller、ArtifactGrant；作为 grantor/delegate/grantee 的关系均覆盖 | Membership stored（仅 delete）、Delegation.status、Task.controlState、**snapshot controller** ArtifactGrant.revokedAt；explicit/requester Grant 只做 effective ACL，不自动物理撤销 |
+| Membership | `membership:<ws>:<pid>` / 失效前 Membership.version | workspace | 该成员在本 Workspace 的权限、其作为 Controller/Delegation grantor/Delegation delegate 的 Task、其作为 grantee 或 source delegation grantor/delegate 的 ArtifactGrant | Task.controlState、**snapshot controller** ArtifactGrant.revokedAt；explicit/requester Grant 只做 effective ACL |
+| Delegation | `delegation:<delegationId>` / 失效前 Delegation.version | workspace | 该 Delegation 的权限、依赖它的 Task Controller/grant | Task.controlState、`sourceDelegationId` 匹配的 snapshot controller ArtifactGrant.revokedAt |
 
 规则：
 
@@ -423,7 +423,7 @@ AuthorityRevocationFence:
 - 源记录当前 status/version 仍是当前授权判据；Membership re-add、Principal enable 产生新 version，旧 fence 不再命中新对象，也不会让旧 Controller/Delegation 复活。旧 Task 的绑定版本仍是旧值，因此保持 frozen，直到显式 `transferController`。
 - `scope.kind=global` 明确表示所有 Workspace，不是“未指定”；不能用一个含义不清的布尔字段代替。
 - Fence 提交后立即拒绝依赖该来源的新命令、读 API、Event cursor 和 Replay；不等待 `status=completed`。
-- Reconcile 只物化已生效的拒绝：写 `Task.controlState=frozen`、`ArtifactGrant.revokedAt`、`lastError`/进度；**绝不写 `controlState=active`，绝不恢复旧 Controller**。
+- Reconcile 只物化已生效的拒绝：写 `Task.controlState=frozen`、**snapshot controller** `ArtifactGrant.revokedAt`、`lastError`/进度；**绝不写 `controlState=active`，绝不恢复旧 Controller**。explicit/requester Grant 只做 effective ACL，不自动物理撤销。
 - 同一 sourceVersion 重复撤销返回已有 fence；若源已处于同一终态，返回该 sourceKey 的现有 fence，不按 commit 后新 version 再建。只有 re-add/enable 后再次失效才创建新 version 的 fence。
 - `status=failed` 不是终态；retry 扫描包含 `pending/reconciling/failed`。完成记录失败不改变即时拒绝。
 - `effectiveAt` 对 expiry 可等于 `expiresAt`，允许过去时间；对 revoke 是 commit 时间。服务端时钟为准。
@@ -459,7 +459,7 @@ AND Artifact ACL 仍允许（Artifact 场景）
 ```
 
 - `principalAuthorityValid(p)`：`status=active`、`deletedAt=null`，且不存在 `sourceKey=principal:<id>` 且 `sourceVersion=p.version` 的 fence。
-- 对对象授权，仍必须比较对象的 controller/grantee 绑定 version 与 fence 的旧 `sourceVersion`；不能只看源记录当前 version。
+- 对对象授权，仍必须比较 controller 绑定 version（以及 snapshot-controller Grant 的 grantee/source version）与 fence 的旧 `sourceVersion`；不能只看源记录当前 version。
 - 任一版本不相等即拒绝；不能只看 stored `active` 或旧 `AuthorizationContext`。
 - `effectivePermission` 回答“某个 Principal 现在能否做某个操作”，不回答“旧 Controller 是否仍能继续控制”；后者见 6.1 的 `effectiveControlState`。
 
@@ -553,6 +553,7 @@ effectiveControlState(task) =
 - v3 不暴露“同一 controller 的 unfreeze”；`controller.unfrozen` 事件不产生。需要恢复控制时，Owner/Admin 必须 `transferController` 到新的有效 controller；旧 controller 不得因恢复操作重新获得控制。
 - 不能把 materialized `active` 当作“仍可控制”；Membership 被移除、Delegation 被撤销/过期、Principal 被禁用后，即使 stored 仍是 active，effective 也是 frozen。
 - `controllerFrozenReason`/`controllerFrozenAt` 只是物化诊断；多个失效来源并发时，reason 可能只记录其中一个，不能用于判断是否已解除。
+- AD-12-R1：撤权 commit 的原子边界是“最终授权检查 + 源 status/version + Fence + authRev”；`controlState` 等派生投影可异步物化，但不得作为授权判据。
 - **权限失效与执行取消分离**：`effectiveControlState=frozen` 不修改 `goalStatus`，不写 `cancel.requestedAt`，不把 running Execution 改成 cancelled。
 - **控制操作与治理操作分离**：创建/调度/取消/完成/更新 Task 等“继续控制”操作要求 `controlState=active` 且 actor 是 controller；`transferController`、Owner/Admin 的 `cancelTask`/`archiveTask`/`deleteTask`/审计读取属于治理操作，可在 frozen 时执行，但不能让旧 controller 继续控制。
 
@@ -856,8 +857,8 @@ ArtifactGrant:
   grantId
   artifactId
   granteePrincipalId         PrincipalId
-  granteePrincipalVersion    number
-  granteeMembershipVersion   number
+  granteePrincipalVersion    number | null    // 仅 task-snapshot-controller 必填
+  granteeMembershipVersion   number | null    // 仅 task-snapshot-controller 必填
   scope                      read | write
   grantedByPrincipalId       PrincipalId
   origin                     explicit | task-snapshot-requester |
@@ -880,11 +881,15 @@ snapshot requester grant: requestedBy（若非 owner，scope=read）
 snapshot controller grant: controller（若非 owner/requester，scope=read）
 ```
 
-- 创建 Grant 时必须同时写入 grantee 的 Principal/Membership authority version；snapshot-controller Grant 还必须写 `sourceDelegationVersion`。缺版本的 Grant 只能 manual recovery，不能按有效授权读取。
+- 创建 Grant 时必须同时写入 grantee 的 Principal/Membership authority version；仅 `origin=task-snapshot-controller` 强制，用于冻结后不可自动恢复。`origin=explicit`/`task-snapshot-requester` 不依赖 version 绑定，使用当前 grantee Membership/Principal 做 live 检查；成员失效时访问暂停，re-add 后按既有 Grant 恢复（除非显式 revoke）。
 - 读取时只使用 Artifact 自身 owner/visibility/Grant，不查询当前 Task 角色。
-- 有效 Grant 必须满足：grantee Principal/Membership 当前有效且 version 与 Grant 记录一致；`sourceDelegationId` 非 null 时，该 Delegation 当前有效且 `sourceDelegationVersion` 一致；无匹配 fence；`revokedAt=null` 且未过期。任一不满足即 effective 无效，即使 `revokedAt` 尚未物化。
-- Membership/Principal 变化会使旧 Grant 的 grantee version 不再匹配；re-add 不会自动恢复旧 Grant，必须重新 `updateArtifactGrant`。Artifact owner 变化不自动改变 Grant。
-- Controller 转移/冻结同步只针对 `origin=task-snapshot-controller` 的 Grant。
+- 有效 Grant 必须满足：
+  - 所有 origin：grantee Principal 当前有效、grantee Membership 当前 effective active、`revokedAt=null`、未过期；
+  - `origin=task-snapshot-controller`：grantee Principal/Membership version 与记录一致，且 `sourceDelegationId` 有效、`sourceDelegationVersion` 一致；无匹配 fence；
+  - `origin=explicit`/`task-snapshot-requester`：不比较 grantee version；成员失效时立即 effective 无效，re-add 后按既有 Grant 恢复（除非显式 revoke）。
+- Membership/Principal 变化不会自动写 explicit/requester Grant 的 `revokedAt`；只有 `origin=task-snapshot-controller` 的 Grant 由 Fence 立即 effective 无效并异步物化 revokedAt。
+- Artifact owner 变化不自动改变 Grant；Artifact owner 转移需显式操作。
+- Controller 转移/冻结同步只针对 `origin=task-snapshot-controller` 的 Grant；冻结时该 Grant 由 Fence/authority version 立即 effective 无效，`revokedAt` 可异步物化；显式 transfer 仍在同一事务撤销旧 Grant/创建新 Grant（AD-06-R1）。
 - Task owner 转移不改变 Artifact owner；需要显式 transfer。
 - Task visibility 变化不改变 Artifact；发布审核事件。
 
@@ -962,7 +967,7 @@ WorkspaceWriteLease:
 - `transferController` 是单事务：旧 controller 失效/冻结，新 controller 校验 effective operator+，更新 `controllerPrincipalId`/`controllerDelegationId`/`controlState`。
 - 运行中的 Execution 不因 transfer 取消；继续持有 lease。
 - 新 controller 不能在同一事务创建新 Execution（先完成 transfer；下次命令）。
-- 旧 controller 的 snapshot ArtifactGrant 撤销，新 controller 创建新 grant（AD-06）。
+- 显式 controller transfer：旧 controller 的 snapshot ArtifactGrant 同事务撤销，新 controller 同事务创建新 grant（AD-06-R1）；撤权冻结则走 Fence 立即 effective 无效 + 异步物化。
 - 所有旧连接/订阅重新授权。
 
 ### 9.4 旧 Executor 仍在运行
@@ -1065,7 +1070,7 @@ Store v3 必须验证：
 8. 一个 SessionBinding 只属于一个 Execution；同一 Session 不能跨 Task 并行。
 9. 同一 Task 的多个 active Execution 必须满足 Workspace 隔离/租约规则。
 10. `effectiveControlState=frozen` 的 Task 不能创建/控制 Execution；stored `controlState` 不能覆盖 authority version/fence。
-11. Artifact owner/grantee 是 effective active 成员；Artifact reference 归属正确；`sourceDelegationId`/grantee authority version 失效时 grant 立即无效。
+11. Artifact owner/grantee 是 effective active 成员；Artifact reference 归属正确；snapshot-controller 的 `sourceDelegationId`/grantee authority version 失效时 grant 立即无效；explicit/requester 使用 live ACL，不因版本变化自动写 revokedAt。
 12. `WorkspaceWriteLease` 最多一个 held（mutex）；与 Execution dispatch/终态/清理关联。
 13. Event 关联完整；事件 scope/audience 与 Workspace 一致。
 14. `authorizationRevision` 单调递增；所有影响授权的变更递增。
@@ -1089,7 +1094,7 @@ Store v3 必须验证：
 6. **Workspace status `quarantined`**：本文使用 `status=active|archived|deleted` + `quarantineState`；如果 Contracts 要求单枚举，需要新增投影而非改 Store。
 7. **Task `cancelTask` 与 running Execution 并存**：本文允许 `goalStatus=cancelled` 与清理中的 Execution 并存；若要求取消必须等全部终态，需要改 API 语义。
 8. **跨 Workspace Artifact 分享**：v3 不开放；未来单独 AD。
-9. **AD-06/AD-12 的“逻辑撤权 vs 同事务物理字段”**：本文用 authority version + effective 派生实现“撤销 commit 后旧权限立即不可用”，`Task.controlState`/`ArtifactGrant.revokedAt` 是可滞后物化 cache；这满足 AD-12 的授权原子性目标，但不满足其字面上“同一 commit 写入所有受影响 Task/Grant 字段”的表述。Phase 2.1A.4 将其列为 OD-11，需冻结决策确认；在确认前不能宣称 AD-06/AD-12 字面闭合。
+9. **AD-06-R1/AD-12-R1（已冻结）**：用户已选择 Authority Version + Revocation Fence + Effective 派生（OD-11 方案 A）。撤权 commit 原子提交权威状态/version/fence/authRev；`Task.controlState`/`ArtifactGrant.revokedAt` 是可异步物化的派生 cache，不能反过来成为授权事实。冻结的 snapshot controller Grant 由 Fence 立即 effective 无效；显式 transfer 仍同事务。详见 `docs/phase-2.1A.5-authority-fence-decision-closure.md`。
 
 ---
 
@@ -1104,4 +1109,4 @@ Contracts v3 的稳定核心是：
 - Artifact 创建时 ACL 与独立 Grant/Reference；
 - 所有终态和 unknown 证据保留 Phase 1.1 的可靠性边界。
 
-本文件只冻结数据模型和状态语义，不实现 Store/API/迁移。Store v3、API v3、ACP Adapter 边界和 v2→v3 迁移见 `docs/phase-2.1A.2-store-api-v3-design.md`。撤权模型的完整闭合、基线来源和 OD-11 见 `docs/phase-2.1A.4-revocation-model-closure.md`。
+本文件只冻结数据模型和状态语义，不实现 Store/API/迁移。Store v3、API v3、ACP Adapter 边界和 v2→v3 迁移见 `docs/phase-2.1A.2-store-api-v3-design.md`。撤权模型、OD-11 方案 A 与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 和 `docs/phase-2.1A.5-authority-fence-decision-closure.md`。

@@ -1,6 +1,6 @@
 # Phase 2.1A.2 Design Review：Contracts v3 / Store v3 / API v3
 
-状态：**Conditional Design Pass / Revocation Closure Reviewed / Two Open Decisions / Implementation Not Started**
+状态：**Conditional Design Pass / Authority Fence Decision Frozen / OD-09 Archive Open / Implementation Not Approved**
 
 日期：2026-11-11（Asia/Shanghai）
 
@@ -9,6 +9,7 @@
 - `docs/phase-2.1A.2-contracts-v3-design.md`
 - `docs/phase-2.1A.2-store-api-v3-design.md`
 - `docs/phase-2.1A.4-revocation-model-closure.md`（A4 增补）
+- `docs/phase-2.1A.5-authority-fence-decision-closure.md`（A5 增补）
 
 审查基线：
 
@@ -28,7 +29,7 @@ Contracts v3、Store v3、API v3 的设计足以作为后续实现拆分输入�
 
 1. 当前 v2 Store/API 没有授权提交、Workspace/Principal/Artifact 和多 Execution 语义；
 2. 设计中的多个关键能力（Windows handle-relative guard、ACP exactly-once、物理 Artifact 安全）尚未实现；
-3. OD-09（baseline 归档）与 OD-11（AD-06/AD-12 逻辑撤权解释）仍需用户决定；其余 OD 已在 Phase 2.1A.3/2.1A.4 收敛（见 9.3）。
+3. OD-09（baseline 归档）仍是独立待处理事项；OD-11 已由用户冻结为方案 A，不再是待决项（见 9.3/9.5）。
 
 Phase 2.1A.3 已完成两项 P1 收敛：
 
@@ -40,9 +41,16 @@ Phase 2.1A.4 进一步：
 - 修正直接 User controller 的 Membership 撤权缺口；
 - 把 Principal/Membership/Delegation 三来源统一为 authority version + `AuthorityRevocationFence`；
 - 明确 Replay 与结果可查询性分离；
-- 核对 baseline 来源，新增 OD-11。
+- 核对 baseline 来源，记录 OD-11。
 
-本轮未发现 AD-01 至 AD-14 或 IW-01 至 IW-11 的未解释语义冲突；发现的是实现门槛、容量/路径/迁移边界、状态投影选择和 AD-06/AD-12 字面物化边界。
+Phase 2.1A.5 进一步：
+
+- 用户选择 OD-11 方案 A，正式冻结 Authority Version + Fence + Effective 派生；
+- AD-06-R1：Controller 冻结的 snapshot Grant 由 Fence 立即 effective 无效，`revokedAt` 异步物化；显式 transfer 仍同事务；
+- AD-12-R1：最终授权检查 + 权威撤权状态/fence 同 commit；派生投影可异步；
+- 修正 Reconcile 对 Delegation delegate 的扫描遗漏，并补齐完成/失败语义。
+
+本轮未发现 AD-01 至 AD-14 或 IW-01 至 IW-11 的未解释语义冲突；AD-06/AD-12 的字面物化边界已通过 AD-06-R1/AD-12-R1 正式修订。
 
 ### 0.1 问题分级
 
@@ -51,7 +59,7 @@ Phase 2.1A.4 进一步：
 | P0 | 2 个实现门槛 | v2 无法承载 v3；Workspace 文件边界不是 OS 强制隔离 |
 | P1 | 9 | Replay 实现、Fence/reconcile 实现、直接 User controller 撤权、Store 容量、路径 native helper、迁移 manual recovery、ACP 不可恢复边界、Artifact 物理存储/保留、到期物化 |
 | P2 | 7 | API 错误/分页/命名、Event schema、Task title/description、cancel 投影、Store 容量参数、Message 延后、Artifact 跨 Workspace 接口 |
-| 用户决策 | 2 | OD-09 baseline 归档、OD-11 AD-06/AD-12 逻辑撤权解释 |
+| 用户决策 | 1 | OD-09 baseline 归档；OD-11 已冻结 |
 
 > P0 是“不能把它当成已实现能力”，不是本设计文档自身矛盾。
 
@@ -117,13 +125,13 @@ Phase 2.1A.4 进一步：
 | AD-03 | private Task 可见性；Agent 同时受自身/用户/委托约束 | Contracts 6.5、10；API 读过滤 | 通过 |
 | AD-04 | Artifact 独立授权；Task 可见性只给创建默认值 | Contracts 8；Store 3.4 | 通过 |
 | AD-05 | Store v3/API v3；v2 只读迁移 | Store 1、11；迁移 8 | 通过 |
-| AD-06 | Artifact ACL 创建时物化；controller 转移/冻结同步 | Contracts 8.2/8.3；Store createArtifact/transfer | 通过（effective version/ACL）；字面同事务撤销见 OD-11 |
+| AD-06 | Artifact ACL 创建时物化；controller 转移/冻结同步 | Contracts 8.2/8.3；Store createArtifact/transfer | 通过（AD-06-R1：冻结即时 effective 无效、`revokedAt` 异步；显式 transfer 仍同事务） |
 | AD-07 | Task/Execution/Lifecycle 矩阵；awaiting_input 延后 | Contracts 6.3、7.3；`dispatching`/`cancelling` 仅投影 | 通过；Open Decision 3 |
 | AD-08 | revoke/expiry/membership loss 冻结 controller；运行中继续 | Contracts 5.2/6.1；Store 2.5 | 通过（A4 补齐 direct user controller）；容量边界 P1 |
 | AD-09 | Event workspace/system scope；cursor 重新授权 | Store 5 | 通过 |
 | AD-10 | requestKey 五元组；replay 重新授权 | Store 4 | 通过 |
 | AD-11 | 多 Execution 与 Workspace mutex 分层 | Contracts 9；Store 3.3 | 通过 |
-| AD-12 | 授权检查与状态写入同一 commit | Store 2 | 通过（授权原子性）；字面同事务物化见 OD-11 |
+| AD-12 | 授权检查与状态写入同一 commit | Store 2 | 通过（AD-12-R1：权威状态/fence 同 commit；派生投影可异步） |
 | AD-13 | Lease 释放需要进程终止/fencing；否则 quarantine | Contracts 9.2；Store 3.3/9 | 通过 |
 | AD-14 | interrupted 与 unknown 都进入 awaiting_decision/风险确认 | Contracts 6.3、6.4；Store acknowledge | 通过 |
 
@@ -203,14 +211,14 @@ Phase 2.1A.4 进一步：
 
 ### 5.2 批量撤权
 
-**A3-P1-02 / A4-P1-01 已收敛设计。** 三种撤权来源统一写 `源状态 + authority version + AuthorityRevocationFence + authorizationRevision`；controller 绑定 Principal/Membership/Delegation version，任一变化立即 effective frozen，不需要在同一 commit 枚举所有 Task。`Task.controlState`/`ArtifactGrant.revokedAt` 是可滞后的物化投影，reconcile 只物化已生效的拒绝。
+**A3-P1-02 / A4-P1-01 已收敛设计。** 三种撤权来源统一写 `源状态 + authority version + AuthorityRevocationFence + authorizationRevision`；controller 绑定 Principal/Membership/Delegation version，任一变化立即 effective frozen，不需要在同一 commit 枚举所有 Task。`Task.controlState`/snapshot-controller `ArtifactGrant.revokedAt` 是可滞后的物化投影，reconcile 只物化已生效的拒绝。
 
-- 不再把“枚举所有 Task 并在同一 commit 冻结”作为唯一方案；OD-11 仍要求用户确认这是否满足 AD-12 字面要求；
+- 不再把“枚举所有 Task 并在同一 commit 冻结”作为唯一方案；AD-12-R1 已冻结“权威状态/fence 同 commit + 派生投影异步”的解释；
 - `effectiveControlState`/effective ArtifactGrant 必须检查 authority version + fence，不能读 stored active；
 - `AUTHORIZATION_RECONCILING` 只表示物化未完成，不表示旧权限仍可用；
 - AD-08 的“立即失效”由源状态/version + fence 保证；“持久化 frozen 字段”允许滞后。
 
-**结论：设计层 DECIDED；实现层仍需 fence 持久化、reconcile 幂等和 crash recovery 测试；OD-11 未定前 Store 撤权实现 BLOCKED。**
+**结论：设计层 DECIDED；实现层仍需 fence 持久化、reconcile 幂等和 crash recovery 测试；OD-11 已冻结，Store 撤权实现按 AD-12-R1 进行。**
 
 ### 5.3 过期
 
@@ -277,7 +285,7 @@ Phase 2.1A.4 进一步：
 
 ## 7. Open Decisions
 
-以下为原始问题清单；Phase 2.1A.3/2.1A.4 的逐项状态见 9.3。除 OD-09、OD-11 外，本轮已完成选择/延后/关闭。
+以下为原始问题清单；Phase 2.1A.3/2.1A.4/2.1A.5 的逐项状态见 9.3。除 OD-09 外，本轮已完成选择/延后/关闭；OD-11 已由用户冻结。
 
 | ID | 问题 | 当前建议 | 影响 |
 |---|---|---|---|
@@ -315,7 +323,7 @@ Phase 2.1A.4 进一步：
 | ID | 问题 | 影响 | 下一步 |
 |---|---|---|---|
 | A3-P1-01 | Replay 顺序/resultSnapshot | 设计已决定；实现需防重复执行/旧 revision 误失败 | 按 9.1 实现/验收；崩溃/并发测试 |
-| A3-P1-02 | Revocation fence/reconcile | 设计已决定；实现需证明即时拒绝、幂等、crash recovery | 按 9.2 实现/验收；OD-11 后 |
+| A3-P1-02 | Revocation fence/reconcile | 设计已决定；实现需证明即时拒绝、幂等、crash recovery | 按 9.2 实现/验收；AD-06-R1/AD-12-R1 |
 | A4-P1-01 | 直接 User controller 撤权缺口 | Membership 撤销后 effectiveControlState 仍 active | 已用 authority version 修正；实现/测试 |
 | P1-03 | Store v3 容量/JSON 写放大 | 32 MiB 不足；v3 集合/事件/历史增长 | 容量测试；冻结 limits/reserve |
 | P1-04 | Windows native path guard | 无 handle-relative/no-follow；TOCTOU 未消除 | 设计/实现 native helper 或 OS sandbox |
@@ -386,7 +394,7 @@ lock
 
 ### 9.2 A3-P1-02 / A4-P1-01：统一 Revocation / Reconcile
 
-**DECIDED（设计层），实现验证未关闭，OD-11 阻塞。** 三种来源统一写 `源状态 + authority version + AuthorityRevocationFence`；controller 绑定 authority version，fence/reconcile 只物化：
+**DECIDED（设计层，OD-11 方案 A 冻结），实现验证未关闭。** 三种来源统一写 `源状态 + authority version + AuthorityRevocationFence`；controller 绑定 authority version，fence/reconcile 只物化：
 
 | 场景 | 行为 |
 |---|---|
@@ -401,8 +409,10 @@ lock
 | Principal 禁用但 Membership/Delegation 未物化 | principal status/version + global fence 立即拒绝 |
 | Principal enable 时 fence 未完成 | `AUTHORIZATION_RECONCILING`；不恢复 Delegation/旧 controller |
 
-- `Task.controlState`/`ArtifactGrant.revokedAt` 是 materialized cache；
+- `Task.controlState`/snapshot-controller `ArtifactGrant.revokedAt` 是 materialized cache；
 - `effectiveControlState`/effective ArtifactGrant 必须看 authority version + fence；
+- Reconcile 扫描必须覆盖 grantee、Delegation grantor、Delegation delegate、controller 和 Artifact owner 关系；不能只扫描直接 grantee；
+- 完成必须从权威状态重新扫描，不能仅凭 processed ids 乐观标记；
 - `AUTHORIZATION_RECONCILING` 不是“旧权限仍有效”；
 - running Execution 继续，不伪造 cancel；
 - 不释放 Lease、不自动创建新 Execution；
@@ -420,16 +430,16 @@ lock
 | OD-06 Store 容量/JSON | **DECIDED** | 继续 `state-v3.json`；初始容量 256 MiB/200k events/10k tasks/50k executions/20k artifacts（provisional）；实现前必须做容量/写放大基准，超过则拒绝新工作。 |
 | OD-07 Workspace status/quarantine | **DECIDED** | 保持 `status=active/archived/deleted` + `quarantineState=normal/quarantined`；API 派生 `WorkspaceAccessState`，不混成单一业务状态。 |
 | OD-08 Artifact purge 保留期/审批 | **DEFERRED** | 具体保留期/审批属于 Phase 2.1B 存储设计；v3 只冻结“不可通过普通 API 直接物理删除”。 |
-| OD-09 缺失 baseline 文档 | **NEEDS_USER_DECISION** | 仓库/Git 无原始文件；用户补充 Draft 元数据可作为历史输入；只能在“归档原文”与“确认不归档”之间选择。详见 A4 第 5 节。 |
+| OD-09 缺失 baseline 文档 | **NEEDS_USER_DECISION** | 仓库/Git 无原始文件；用户补充 Draft 文本/元数据可作为历史输入；只能在“归档原文”与“确认不归档”之间选择。详见 A4 第 5 节。 |
 | OD-10 2.1B 设计边界 | **DECIDED** | 本文件中的 Task/Artifact v3 是设计输入；Phase 2.1B 实现仍需单独启动，不在本轮开始。 |
-| OD-11 AD-06/AD-12 逻辑撤权解释 | **NEEDS_USER_DECISION** | authority version + effective 派生 vs 同 commit 枚举所有 Task/Grant；Store 撤权实现受此阻塞。详见 A4 6.3。 |
+| OD-11 AD-06/AD-12 逻辑撤权解释 | **DECIDED（方案 A，冻结）** | 用户接受 authority version + effective 派生 + 异步物化；AD-06-R1/AD-12-R1 已记录。详见 A5。 |
 
 ### 9.4 v3 实现准入结论
 
 | 领域 | 当前状态 | 准入条件 |
 |---|---|---|
-| Contracts | CONDITIONAL | 类型/字段/引用/状态机通过评审；OD-11 字面语义确认 |
-| Store | BLOCKED | `commitAuthorized`、replay 顺序、fence、crash recovery 测试；OD-11 未定 |
+| Contracts | CONDITIONAL | 类型/字段/引用/状态机通过评审；AD-06-R1/AD-12-R1 已冻结 |
+| Store | CONDITIONAL | `commitAuthorized`、replay 顺序、fence、crash recovery 测试；AD-12-R1 已冻结 |
 | API | CONDITIONAL | typed commands、读过滤、错误语义、外部副作用边界 |
 | Migration | CONDITIONAL | 显式 workspace/owner/root、manual recovery、备份回滚 |
 | Windows | CONDITIONAL（OS 隔离 BLOCKED） | native helper/OS sandbox 或明确接受 cooperative；quarantine 测试 |
@@ -438,7 +448,7 @@ lock
 | Replay/查询 | READY | 设计已冻结；实现测试 |
 | Phase 2.1B | DEFERRED | 单独批准；不得因本设计通过而自动开始 |
 
-**结论：v3 设计可冻结为实现输入，但实现准入为 CONDITIONAL；P0/P1、OD-09、OD-11 未关闭前不得开始实现。**
+**结论：v3 设计可冻结为实现输入，但实现准入为 CONDITIONAL；P0/P1、OD-09 未关闭前不得开始实现。OD-11 已冻结，不再是阻塞项。**
 
 ### 9.5 Phase 2.1A.4 Revocation Model Closure
 
@@ -456,7 +466,7 @@ User U 直接控制 Task T
 - Task 记录 controller 赋值时的 `controllerPrincipalVersion`、`controllerMembershipVersion`、`controllerDelegationVersion`。
 - `effectiveControlState` 要求 controller 的 Principal/Membership 当前有效且 version 完全匹配；委托 controller 还要求 Delegation grantor/delegate version 匹配。
 - Membership 撤销、Delegation 撤销/过期、Principal 禁用/删除，任一发生都会使旧绑定失效；不需要在撤权 commit 枚举 Task。
-- `Task.controlState` / `ArtifactGrant.revokedAt` 是 cache；reconcile 只写 frozen/revoked，绝不写 active。
+- `Task.controlState` / snapshot-controller `ArtifactGrant.revokedAt` 是 cache；reconcile 只写 frozen/revoked，绝不写 active。
 - 旧 controller 不能因 re-add/enable/旧快照/恢复操作重新获得控制；只能显式 `transferController`。
 - 多来源取并集；一个 fence 完成不清除另一个。
 - 撤权不取消 Execution、不释放 Lease、不写 cancel request、不改变 goalStatus/lifecycle。
@@ -465,9 +475,11 @@ User U 直接控制 Task T
 
 **OD-09：** 仓库/Git 无可验证原始 baseline；用户补充 Draft 文本/元数据可作为历史输入；未恢复原文、未拼凑。规范性层级为 2.0.3 > 2.0.2 > 2.0.1 > Draft。OD-09 仍为 `NEEDS_USER_DECISION`（归档原文 vs 确认不归档）。
 
-**OD-11：** AD-06/AD-12 字面要求同一 commit 写所有受影响 `Task.controlState`/`ArtifactGrant.revokedAt`；本设计用 authority version + effective 派生实现即时拒绝，但物理字段可滞后。该差异必须由用户选择；未定前 Store 撤权实现和 Artifact controller grant 同事务同步为 `BLOCKED`。
+**OD-11：** 用户已选择方案 A 并冻结：撤权 commit 原子写权威状态/version/fence/authRev；派生 `Task.controlState`/snapshot-controller `ArtifactGrant.revokedAt` 允许异步物化，但不得作为授权判据。AD-06-R1 将冻结的 snapshot controller Grant 改为“Fence 立即 effective 无效、`revokedAt` 异步”；显式 transfer 仍同事务。AD-12-R1 将“同一 commit”限定为最终授权检查 + 权威撤权状态，不要求同步所有派生投影。不再标记为 `NEEDS_USER_DECISION`。
 
-详细模型、九场景、reconcile/replay 审计与 OD-11 选项见 `docs/phase-2.1A.4-revocation-model-closure.md`。
+**Reconcile 完整性：** Principal/Membership/Delegation fence 的扫描必须覆盖 grantee、Delegation grantor、Delegation delegate、controller 及 Artifact owner 的既有独立处理；不得只扫描直接 grantee。A5 第 3 节已补齐 delegate 遗漏和完成条件。
+
+详细模型、十二场景、reconcile/replay 审计与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 与 `docs/phase-2.1A.5-authority-fence-decision-closure.md`。
 
 ## 10. 实现阶段依赖与建议顺序
 
@@ -501,6 +513,7 @@ Contracts v3/Store v3/API v3 设计在以下意义上通过：
 - 核心实体、字段、关系完整；
 - Task goalStatus/lifecycle/controlState 与 Execution 状态分离；
 - Principal/Membership/Delegation 三来源撤权统一到 authority version + fence，直接 User controller 缺口已修正；
+- AD-06-R1/AD-12-R1 已冻结：权威撤权立即生效，派生投影可异步；
 - Artifact ACL 独立于 Task ACL；
 - `commitAuthorized` 的授权/状态/事件原子边界明确；
 - requestKey/Event cursor 语义明确；
@@ -513,10 +526,9 @@ Contracts v3/Store v3/API v3 设计在以下意义上通过：
 - 当前 v2 不能承载；
 - P0/P1 尚未关闭；
 - OD-09（baseline 归档）未确认；
-- OD-11（AD-06/AD-12 逻辑撤权解释）未确认；
 - 没有代码/测试/真实多用户/路径攻击证据；
 - Phase 2.1B 实现仍未启动。
 
-**建议：接受为 Contracts v3/Store v3/API v3 设计基线，进入实现拆分与 Open Decisions 确认；OD-09/OD-11 确认前不实现撤权 commit，不开始 Phase 2.1B。**
+**建议：接受为 Contracts v3/Store v3/API v3 设计基线，进入实现拆分与 Open Decisions 确认；OD-11 已冻结，撤权 commit 可按 AD-06-R1/AD-12-R1 实现，但整体实现仍需 Phase 2.1B 批准。OD-09 归档可独立处理。**
 
-完整撤权模型与基线来源见 `docs/phase-2.1A.4-revocation-model-closure.md`。
+完整撤权模型与基线来源见 `docs/phase-2.1A.4-revocation-model-closure.md`，决策冻结与 Reconcile 完整性见 `docs/phase-2.1A.5-authority-fence-decision-closure.md`。
