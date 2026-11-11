@@ -343,15 +343,130 @@ test('contracts: membership stored/effective separation and revision binding', (
     cause: 'revoked',
     sourceVersion: 1,
   });
-  assert.equal(effectiveMembershipStatus(owner, ws, memberRecord, [membershipFence]), 'revoked');
+  const memberAfterVersion = member('prn_agent', 'operator', 'mrev_agent_2', 2, 'active');
+  assert.equal(effectiveMembershipStatus(owner, ws, memberRecord, [membershipFence]), 'active');
+  assert.equal(effectiveMembershipStatus(owner, ws, memberAfterVersion, [membershipFence]), 'revoked');
   const principalFence = fence({
     sourceKey: canonicalSourceKey('principal', 'prn_owner'),
     principalId: 'prn_owner',
     sourceVersion: 1,
   });
-  assert.equal(effectiveMembershipStatus(owner, ws, memberRecord, [principalFence]), 'revoked');
+  assert.equal(effectiveMembershipStatus(owner, ws, memberRecord, [principalFence]), 'active');
+  assert.equal(effectiveMembershipStatus({ ...owner, version: 2 }, ws, memberRecord, [principalFence]), 'revoked');
   assert.equal(effectiveMembershipStatus(owner, { ...ws, status: 'archived' }, memberRecord), 'active');
   assert.equal(effectiveMembershipStatus(owner, { ...ws, status: 'deleted' }, memberRecord), 'suspended');
+});
+
+test('contracts: effective projection keeps a membership fence after version increments', t => {
+  const f = baseStore(t);
+  f.store[INTERNAL](1, draft => {
+    draft.workspaceMembers[1] = member('prn_agent', 'operator', 'mrev_agent_3', 3, 'active');
+    draft.membershipRevisions.push(
+      revision('mrev_agent_2', 'prn_agent', 'operator', 2, 'revoked', { previousRevisionId: 'mrev_agent_1', time: T1 }),
+      revision('mrev_agent_3', 'prn_agent', 'operator', 3, 'active', { previousRevisionId: 'mrev_agent_2', time: T2 }),
+    );
+    draft.revocationFences.push(fence({
+      fenceId: 'fence_membership_old',
+      sourceKind: 'membership',
+      sourceKey: canonicalSourceKey('membership', 'ws_1', 'prn_agent'),
+      scope: { kind: 'workspace', workspaceId: 'ws_1' },
+      principalId: 'prn_agent',
+      cause: 'revoked',
+      sourceVersion: 1,
+    }));
+    return [];
+  });
+  const state = f.store.snapshot();
+  const agentPrincipal = state.principals.find(item => item.principalId === 'prn_agent');
+  const memberRecord = state.workspaceMembers.find(item => item.principalId === 'prn_agent');
+  const workspaceRecord = state.workspaces[0];
+  assert.equal(effectiveMembershipStatus(agentPrincipal, workspaceRecord, memberRecord, state.revocationFences), 'revoked');
+  f.store.close();
+});
+
+test('contracts: effective projection keeps a principal fence across disable, re-enable, and version growth', t => {
+  const f = baseStore(t);
+  f.store[INTERNAL](1, draft => {
+    draft.principals[1] = agent('prn_agent', { status: 'disabled', disabledAt: T1, updatedAt: T1, version: 2 });
+    draft.revocationFences.push(fence({
+      fenceId: 'fence_principal_old',
+      sourceKey: canonicalSourceKey('principal', 'prn_agent'),
+      principalId: 'prn_agent',
+      sourceVersion: 1,
+      cause: 'disabled',
+    }));
+    return [];
+  });
+  let state = f.store.snapshot();
+  let agentPrincipal = state.principals.find(item => item.principalId === 'prn_agent');
+  const memberRecord = state.workspaceMembers.find(item => item.principalId === 'prn_agent');
+  assert.equal(effectiveMembershipStatus(agentPrincipal, state.workspaces[0], memberRecord, state.revocationFences), 'revoked');
+
+  f.store[INTERNAL](2, draft => {
+    draft.principals[1] = agent('prn_agent', { status: 'active', disabledAt: null, disabledReason: null, updatedAt: T2, version: 3 });
+    return [];
+  });
+  state = f.store.snapshot();
+  agentPrincipal = state.principals.find(item => item.principalId === 'prn_agent');
+  assert.equal(agentPrincipal.status, 'active');
+  assert.equal(effectiveMembershipStatus(agentPrincipal, state.workspaces[0], state.workspaceMembers.find(item => item.principalId === 'prn_agent'), state.revocationFences), 'revoked');
+  f.store.close();
+});
+
+test('contracts: quarantined fences are excluded from effective membership projection', t => {
+  const f = baseStore(t);
+  f.store[INTERNAL](1, draft => {
+    draft.revocationFences.push(
+      fence({
+        fenceId: 'fence_membership_q',
+        sourceKind: 'membership',
+        sourceKey: canonicalSourceKey('membership', 'ws_1', 'prn_agent'),
+        scope: { kind: 'workspace', workspaceId: 'ws_1' },
+        principalId: 'prn_agent',
+        cause: 'revoked',
+        sourceVersion: 1,
+        status: 'quarantined',
+        completedAt: null,
+        quarantineReason: 'manual review',
+      }),
+      fence({
+        fenceId: 'fence_principal_q',
+        sourceKey: canonicalSourceKey('principal', 'prn_agent'),
+        principalId: 'prn_agent',
+        sourceVersion: 1,
+        cause: 'disabled',
+        status: 'quarantined',
+        completedAt: null,
+        quarantineReason: 'manual review',
+      }),
+    );
+    return [];
+  });
+  const state = f.store.snapshot();
+  const agentPrincipal = state.principals.find(item => item.principalId === 'prn_agent');
+  const memberRecord = state.workspaceMembers.find(item => item.principalId === 'prn_agent');
+  assert.equal(effectiveMembershipStatus(agentPrincipal, state.workspaces[0], memberRecord, state.revocationFences), 'active');
+  f.store.close();
+});
+
+test('contracts: mismatched workspace or principal fences do not affect another membership', () => {
+  const memberRecord = member('prn_agent', 'operator', 'mrev_agent_2', 2, 'active');
+  const owner = user();
+  const ws = workspace();
+  const otherPrincipalFence = fence({
+    sourceKey: canonicalSourceKey('principal', 'prn_other'),
+    principalId: 'prn_other',
+    sourceVersion: 1,
+  });
+  const otherWorkspaceFence = fence({
+    sourceKind: 'membership',
+    sourceKey: canonicalSourceKey('membership', 'ws_2', 'prn_agent'),
+    scope: { kind: 'workspace', workspaceId: 'ws_2' },
+    principalId: 'prn_agent',
+    cause: 'revoked',
+    sourceVersion: 1,
+  });
+  assert.equal(effectiveMembershipStatus(owner, ws, memberRecord, [otherPrincipalFence, otherWorkspaceFence]), 'active');
 });
 
 test('contracts: System principals cannot hold Workspace membership', t => {

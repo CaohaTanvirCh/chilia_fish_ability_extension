@@ -675,10 +675,22 @@ export function assertRequestRecord(value, options = {}) {
 export function effectiveMembershipStatus(principal, workspace, member, fences = []) {
   if (member.status === 'revoked') return 'revoked';
   const membershipKey = canonicalSourceKey('membership', member.workspaceId, member.principalId);
-  if (fences.some(fence => fence.sourceKind === 'membership' && fence.sourceKey === membershipKey && fence.sourceVersion === member.version)) return 'revoked';
+  const membershipFence = fences.some(fence => fence.sourceKind === 'membership'
+    && fence.sourceKey === membershipKey
+    && fence.status !== 'quarantined'
+    && Number.isSafeInteger(fence.sourceVersion)
+    && fence.sourceVersion > 0
+    && fence.sourceVersion < member.version);
+  if (membershipFence) return 'revoked';
   if (principal.deletedAt !== null) return 'revoked';
   const principalKey = canonicalSourceKey('principal', principal.principalId);
-  if (fences.some(fence => fence.sourceKind === 'principal' && fence.sourceKey === principalKey && fence.sourceVersion === principal.version)) return 'revoked';
+  const principalFence = fences.some(fence => fence.sourceKind === 'principal'
+    && fence.sourceKey === principalKey
+    && fence.status !== 'quarantined'
+    && Number.isSafeInteger(fence.sourceVersion)
+    && fence.sourceVersion > 0
+    && fence.sourceVersion < principal.version);
+  if (principalFence) return 'revoked';
   if (principal.status !== 'active') return 'suspended';
   if (workspace.status === 'deleted') return 'suspended';
   if (workspace.status === 'archived') return 'active';
