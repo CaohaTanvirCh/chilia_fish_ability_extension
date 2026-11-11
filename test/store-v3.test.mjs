@@ -9,6 +9,73 @@ import { StoreV3, STORE_V3_INTERNAL_COMMIT } from '../packages/task-store-v3/ind
 
 const INTERNAL = STORE_V3_INTERNAL_COMMIT;
 const crashFixture = fileURLToPath(new URL('./fixtures/store-v3-crash.mjs', import.meta.url));
+const T0 = '2026-01-01T00:00:00.000Z';
+
+function seedWorkspace(draft, workspaceId = 'ws_main', principalId = 'prn_owner') {
+  draft.principals.push({
+    principalId,
+    principalType: 'user',
+    displayName: 'Owner',
+    status: 'active',
+    deletedAt: null,
+    disabledAt: null,
+    disabledReason: null,
+    createdByPrincipalId: null,
+    createdAt: T0,
+    updatedAt: T0,
+    version: 1,
+  });
+  draft.workspaces.push({
+    workspaceId,
+    name: 'Main Workspace',
+    status: 'active',
+    ownerPrincipalId: principalId,
+    rootStatus: 'bound',
+    rootRef: 'root-ref',
+    rootPath: 'C:\\work',
+    rootIdentity: { volumeSerial: 'vol', fileId: 'file', finalPath: 'C:\\work', observedAt: T0 },
+    workspaceBoundaryEnforcement: 'cooperative',
+    quarantineState: 'normal',
+    quarantineReason: null,
+    quarantinedAt: null,
+    isolationPolicy: 'mutex',
+    governanceState: 'normal',
+    writeEpoch: 0,
+    policyVersion: 1,
+    createdByPrincipalId: principalId,
+    createdAt: T0,
+    updatedAt: T0,
+    archivedAt: null,
+    deletedAt: null,
+    deletedFrom: null,
+  });
+  draft.workspaceMembers.push({
+    workspaceId,
+    principalId,
+    role: 'owner',
+    status: 'active',
+    version: 1,
+    lastMembershipRevisionId: 'mrev_owner_1',
+    grantedByPrincipalId: principalId,
+    grantedAt: T0,
+    updatedAt: T0,
+    revokedAt: null,
+    revokedReason: null,
+  });
+  draft.membershipRevisions.push({
+    membershipRevisionId: 'mrev_owner_1',
+    workspaceId,
+    principalId,
+    version: 1,
+    storedStatus: 'active',
+    role: 'owner',
+    actorPrincipalId: principalId,
+    time: T0,
+    reason: null,
+    previousRevisionId: null,
+  });
+  return { workspaceId, principalId };
+}
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'fish-store-v3-'));
@@ -214,14 +281,14 @@ test('workspace-scoped events persist with their workspace id', t => {
   const f = fixture(t);
   const store = f.make().open();
   const state = store[INTERNAL](0, draft => {
-    draft.workspaces.push({ workspaceId: 'workspace-1' });
-    return [event({ scope: 'workspace', workspaceId: 'workspace-1' })];
+    const seeded = seedWorkspace(draft);
+    return [event({ scope: 'workspace', workspaceId: seeded.workspaceId })];
   });
   assert.equal(state.events[0].scope, 'workspace');
-  assert.equal(state.events[0].workspaceId, 'workspace-1');
+  assert.equal(state.events[0].workspaceId, 'ws_main');
   store.close();
   const reopened = f.make().open();
-  assert.equal(reopened.snapshot().events[0].workspaceId, 'workspace-1');
+  assert.equal(reopened.snapshot().events[0].workspaceId, 'ws_main');
   reopened.close();
 });
 
@@ -233,16 +300,9 @@ test('collection identity and membership uniqueness are enforced', t => {
     return [];
   }), { code: 'VALIDATION' });
   assert.throws(() => store[INTERNAL](0, draft => {
-    draft.workspaceMembers.push({ workspaceId: 'workspace-1' });
+    draft.workspaceMembers.push({ workspaceId: 'ws_main' });
     return [];
-  }), { code: 'VALIDATION' });
-  assert.throws(() => store[INTERNAL](0, draft => {
-    draft.workspaceMembers.push(
-      { workspaceId: 'workspace-1', principalId: 'principal-1' },
-      { workspaceId: 'workspace-1', principalId: 'principal-1' },
-    );
-    return [];
-  }), { code: 'VALIDATION' });
+  }), { code: 'CONTRACT_REQUIRED_FIELD' });
   assert.equal(store.snapshot().revision, 0);
   store.close();
 });

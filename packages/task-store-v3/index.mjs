@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { validateStoreV3IdentityState } from '../contracts/v3.mjs';
 
 /**
  * Internal transaction capability.
@@ -66,13 +67,6 @@ const ID_COLLECTIONS = {
   requests: 'requestRecordId',
 };
 const PLAIN_COLLECTIONS = ['workspaceMembers', 'artifactReferences', 'migrationRecords'];
-const BOOTSTRAP_FIELDS = new Set([
-  'bootstrapPrincipalId',
-  'workspaceId',
-  'ownerPrincipalId',
-  'rootFingerprint',
-  'completedAt',
-]);
 const EVENT_FIELDS = new Set([
   'eventId',
   'sequence',
@@ -95,6 +89,11 @@ const EVENT_FIELDS = new Set([
 const EVENT_SCOPES = new Set(['workspace', 'system']);
 const EVENT_SOURCES = new Set(['user', 'agent', 'hub', 'executor', 'system']);
 const EVENT_AUDIENCES = new Set(['tenant', 'admin', 'system']);
+const ARRAY_COLLECTIONS = [
+  'principals', 'workspaces', 'workspaceMembers', 'membershipRevisions', 'membershipInvites',
+  'delegations', 'revocationFences', 'tasks', 'executions', 'sessionBindings', 'artifacts',
+  'artifactReferences', 'artifactGrants', 'workspaceLeases', 'requests', 'events', 'migrationRecords',
+];
 const EVENT_MAX_BYTES = 4096;
 const DIRECTORY_SYNC_UNSUPPORTED = new Set(['EISDIR', 'EPERM', 'ENOTSUP', 'EBADF']);
 
@@ -293,49 +292,6 @@ export class StoreV3 {
     return state;
   }
 
-  #validateBootstrap(bootstrap, code) {
-    if (bootstrap === null) return;
-    record(bootstrap, code);
-    const keys = Object.keys(bootstrap);
-    if (keys.length !== BOOTSTRAP_FIELDS.size || keys.some(key => !BOOTSTRAP_FIELDS.has(key))) throw fault(code, 'Invalid bootstrapState fields');
-    for (const key of ['bootstrapPrincipalId', 'workspaceId', 'ownerPrincipalId', 'rootFingerprint']) text(bootstrap[key], `bootstrapState.${key}`, code);
-    if (typeof bootstrap.completedAt !== 'string' || !Number.isFinite(Date.parse(bootstrap.completedAt))) throw fault(code, 'Invalid bootstrapState.completedAt');
-  }
-
-  #validateEvents(state, code) {
-    if (!Array.isArray(state.events)) throw fault(code, 'events must be an array');
-    if (state.events.length !== state.sequence) throw fault(code, 'event sequence does not match events length');
-    const eventIds = new Set();
-    for (const [index, event] of state.events.entries()) {
-      record(event, code);
-      const keys = Object.keys(event);
-      if (keys.length !== EVENT_FIELDS.size || keys.some(key => !EVENT_FIELDS.has(key))) throw fault(code, 'Invalid event fields');
-      text(event.eventId, 'eventId', code);
-      if (eventIds.has(event.eventId)) throw fault(code, 'Duplicate eventId');
-      eventIds.add(event.eventId);
-      if (!Number.isSafeInteger(event.sequence) || event.sequence !== index + 1) throw fault(code, 'Invalid event sequence');
-      if (!Number.isSafeInteger(event.revision) || event.revision < 1 || event.revision > state.revision) throw fault(code, 'Invalid event revision');
-      if (!EVENT_SCOPES.has(event.scope)) throw fault(code, 'Invalid event scope');
-      if (event.scope === 'system') {
-        if (event.workspaceId !== null) throw fault(code, 'System event must not have workspaceId');
-      } else {
-        text(event.workspaceId, 'event.workspaceId', code);
-      }
-      text(event.type, 'event.type', code);
-      if (!Number.isSafeInteger(event.schemaVersion) || event.schemaVersion < 1) throw fault(code, 'Invalid event schemaVersion');
-      if (!EVENT_SOURCES.has(event.source)) throw fault(code, 'Invalid event source');
-      if (!EVENT_AUDIENCES.has(event.audience)) throw fault(code, 'Invalid event audience');
-      for (const key of ['actorPrincipalId', 'taskId', 'executionId', 'artifactId', 'correlationId', 'causationId']) optionalText(event[key], `event.${key}`, code);
-      if (typeof event.time !== 'string' || !Number.isFinite(Date.parse(event.time))) throw fault(code, 'Invalid event time');
-      try {
-        json(event.data);
-      } catch (error) {
-        throw fault(code, `Invalid event data: ${error.message}`);
-      }
-      if (Buffer.byteLength(JSON.stringify(event)) > EVENT_MAX_BYTES) throw fault(code, 'Event exceeds 4 KiB');
-    }
-  }
-
   #validate(state, code = 'VALIDATION') {
     record(state, code);
     const keys = Object.keys(state);
@@ -344,15 +300,30 @@ export class StoreV3 {
     if (!Number.isSafeInteger(state.revision) || state.revision < 0) throw fault(code, 'Invalid revision');
     if (!Number.isSafeInteger(state.sequence) || state.sequence < 0) throw fault(code, 'Invalid sequence');
     if (!Number.isSafeInteger(state.authorizationRevision) || state.authorizationRevision < 0) throw fault(code, 'Invalid authorizationRevision');
-    this.#validateBootstrap(state.bootstrapState, code);
     record(state.authorizationState, code);
     const authKeys = Object.keys(state.authorizationState);
     if (authKeys.length !== 1 || authKeys[0] !== 'authorizationRevision') throw fault(code, 'Invalid authorizationState');
     if (!Number.isSafeInteger(state.authorizationState.authorizationRevision) || state.authorizationState.authorizationRevision < 0) throw fault(code, 'Invalid authorizationState.authorizationRevision');
     if (state.authorizationState.authorizationRevision !== state.authorizationRevision) throw fault(code, 'authorizationRevision projection mismatch');
+    for (const name of ARRAY_COLLECTIONS) if (!Array.isArray(state[name])) throw fault(code, `${name} must be an array`);
+
+    // Identity/workspace/authority entities are validated by Contracts v3.
+    // On load, a contract failure is a corrupt snapshot; on a new transaction,
+    // the specific CONTRACT_* code is preserved.
+    try {
+      validateStoreV3IdentityState(state);
+    } catch (error) {
+      if (code === 'STORE_CORRUPT') {
+        const wrapped = fault('STORE_CORRUPT', `Invalid v3 state: ${error.message}`);
+        wrapped.contractCode = error.code;
+        wrapped.contractPath = error.path;
+        wrapped.cause = error;
+        throw wrapped;
+      }
+      throw error;
+    }
 
     for (const [name, idField] of Object.entries(ID_COLLECTIONS)) {
-      if (!Array.isArray(state[name])) throw fault(code, `${name} must be an array`);
       const ids = new Set();
       for (const item of state[name]) {
         record(item, code);
@@ -362,20 +333,8 @@ export class StoreV3 {
       }
     }
     for (const name of PLAIN_COLLECTIONS) {
-      if (!Array.isArray(state[name])) throw fault(code, `${name} must be an array`);
       for (const item of state[name]) record(item, code);
     }
-    for (const member of state.workspaceMembers) {
-      text(member.workspaceId, 'workspaceMembers.workspaceId', code);
-      text(member.principalId, 'workspaceMembers.principalId', code);
-    }
-    const memberKeys = new Set();
-    for (const member of state.workspaceMembers) {
-      const key = JSON.stringify([member.workspaceId, member.principalId]);
-      if (memberKeys.has(key)) throw fault(code, 'Duplicate workspace membership');
-      memberKeys.add(key);
-    }
-    this.#validateEvents(state, code);
   }
 
   #validateEventInput(input) {
