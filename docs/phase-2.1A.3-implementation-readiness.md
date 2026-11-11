@@ -137,11 +137,11 @@ Principal/Membership/Delegation 状态 + authority version
 - 多来源撤权：取并集，一个 fence 完成不清除另一个；不自动 unfreeze。
 - `enablePrincipal` 必须等待 principal fence 完成，避免 Delegation 复活。
 - Reconcile 完整性、delegate 覆盖和完成条件见 `docs/phase-2.1A.5-authority-fence-decision-closure.md` 第 3 节；target identity/操作影响矩阵见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`。
-- 目标识别必须用具体 Task/Grant ID + authority binding；委托目标必须解析 Delegation grantor/delegate 两端 Principal/Membership binding；Membership fence 同时检查 grantorMembershipVersion 与 delegateMembershipVersion；不能只用 controllerMembershipVersion。
+- 目标识别必须用具体 Task/Grant ID + Workspace + authority binding；匹配必须同时满足 source identity（Principal ID/Delegation ID）、scope（Workspace）和 version；委托目标必须解析 Delegation grantor/delegate 两端 Principal/Membership ID/version；Membership fence 同时检查 grantorMembershipVersion 与 delegateMembershipVersion；不能只用 controllerMembershipVersion。
 - re-add/enable/new delegation/new explicit Grant 不能让旧目标跳过；新 explicit Grant 不免除旧 snapshot Grant 的撤销。
 - Artifact owner 只做 live ACL/审计，不是 Fence 物化目标；Reconcile 不得写 ownerPrincipalId。
 - 源级撤权事件在源 commit；`controller.frozen`/`artifact.grant_revoked` 是派生事件，幂等且不是授权前置。
-- Reconcile batch commit 与 Fence completion commit 分离；不要求所有批次同一事务；completion 失败可重试且不回滚批次。详见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`。
+- Reconcile batch commit 与 Fence completion commit 分离；不要求所有批次同一事务；completion 失败可重试且不回滚批次。详见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；sourceKey/ID/Workspace/version 碰撞见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`。
 
 详细见 `docs/phase-2.1A.4-revocation-model-closure.md` 与 A5。
 

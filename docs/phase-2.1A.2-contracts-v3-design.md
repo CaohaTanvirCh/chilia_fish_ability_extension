@@ -419,7 +419,11 @@ AuthorityRevocationFence:
 规则：
 
 - **Fence 是持久的失效事实和 reconcile 游标，不是唯一的授权判据。** 源记录当前 status/version 判断当前请求是否失权；fence 的旧 `sourceVersion` 用于判断某个 Task/Grant 的绑定是否已被失效。两者任一判为失效即拒绝。
-- `sourceVersion` 是**被失效的旧版本**，不是 revoke/disable commit 后的新 version。它用于匹配仍绑定旧版本的 Task/Grant：`controllerMembershipVersion=sourceVersion`、`controllerDelegationVersion=sourceVersion`、`controllerPrincipalVersion=sourceVersion`。
+- `sourceVersion` 是**被失效的旧版本**，不是 revoke/disable commit 后的新 version。version 是各记录的局部版本，不能单独用于跨主体匹配；必须同时匹配 sourceKey 的身份/作用域。
+- 匹配解析 `sourceKey`：`principal:<principalId>`（global）、`membership:<workspaceId>:<principalId>`（workspace）、`delegation:<delegationId>`（workspace）。比较时同时校验 Principal/Membership/Delegation 的 ID、Workspace（适用时）与对应 authority version；任一不一致即不匹配。
+- 直接 controller：`controllerPrincipalId == fencePrincipalId && controllerPrincipalVersion == sourceVersion`（Principal）；`workspaceId == fenceWorkspaceId && controllerPrincipalId == fencePrincipalId && controllerMembershipVersion == sourceVersion`（Membership）。
+- 委托 controller：grantor/delegate 两端分别用 `grantorPrincipalId`/`delegatePrincipalId` + 对应 Principal version（Principal fence），以及 `grantorPrincipalId`/`delegatePrincipalId` + 对应 Membership version + 同一 Workspace（Membership fence）匹配。
+- Snapshot-controller Grant：grantee 以及 source Delegation 的 grantor/delegate 都必须按 ID + Workspace（Membership）/scope + version 匹配；只比较 `sourceDelegationVersion` 不足。
 - 源记录当前 status/version 仍是当前授权判据；Membership re-add、Principal enable 产生新 version，旧 fence 不再命中新对象，也不会让旧 Controller/Delegation 复活。旧 Task 的绑定版本仍是旧值，因此保持 frozen，直到显式 `transferController`。
 - `scope.kind=global` 明确表示所有 Workspace，不是“未指定”；不能用一个含义不清的布尔字段代替。
 - Fence 提交后立即拒绝依赖该来源的新命令、读 API、Event cursor 和 Replay；不等待 `status=completed`。
@@ -429,7 +433,7 @@ AuthorityRevocationFence:
 - `effectiveAt` 对 expiry 可等于 `expiresAt`，允许过去时间；对 revoke 是 commit 时间。服务端时钟为准。
 - 源级撤权事件必须在撤权 commit；`controller.frozen`/`artifact.grant_revoked`/`authorization.reconciled` 是 Reconcile 派生事件，按 `fenceId+sourceVersion+targetId` 幂等，不能作为授权失效前置条件。
 - Reconcile target identity 使用具体对象 ID + authority binding；Principal enable、Membership re-add、new Delegation、new explicit Grant 不能单独让旧 Task/Grant 退出旧 Fence。
-- 委托目标必须解析 Delegation 的 grantor/delegate 两端：Principal fence 检查 grantorPrincipalVersion 与 delegatePrincipalVersion；Membership fence 检查 grantorMembershipVersion 与 delegateMembershipVersion；ArtifactGrant 的 sourceDelegationId 非 null 时同样按完整 binding 检查，不能只看 sourceDelegationVersion。
+- 委托目标必须解析 Delegation 的 grantor/delegate 两端：Principal fence 检查 `grantorPrincipalId`/`delegatePrincipalId` 与各自 `grantorPrincipalVersion`/`delegatePrincipalVersion`；Membership fence 检查 Workspace、`grantorPrincipalId`/`delegatePrincipalId` 与各自 `grantorMembershipVersion`/`delegateMembershipVersion`；ArtifactGrant 的 `sourceDelegationId` 非 null 时同样按完整 ID/Workspace/version binding 检查，不能只看 sourceDelegationVersion。
 
 ### 5.4 有效权限与失效来源
 
@@ -462,7 +466,7 @@ AND Artifact ACL 仍允许（Artifact 场景）
 ```
 
 - `principalAuthorityValid(p)`：`status=active`、`deletedAt=null`，且不存在 `sourceKey=principal:<id>` 且 `sourceVersion=p.version` 的 fence。
-- 对对象授权，仍必须比较 controller 绑定 version（以及 snapshot-controller Grant 的 grantee/source version）与 fence 的旧 `sourceVersion`；不能只看源记录当前 version。
+- 对对象授权，仍必须比较 controller 绑定（Principal/Delegation ID + Workspace + version；snapshot-controller Grant 还包括 grantee/source delegation ID/Workspace + version）与 fence 的旧 `sourceVersion`；不能只看 version 数值或当前记录。
 - 任一版本不相等即拒绝；不能只看 stored `active` 或旧 `AuthorizationContext`。
 - `effectivePermission` 回答“某个 Principal 现在能否做某个操作”，不回答“旧 Controller 是否仍能继续控制”；后者见 6.1 的 `effectiveControlState`。
 
@@ -1112,4 +1116,4 @@ Contracts v3 的稳定核心是：
 - Artifact 创建时 ACL 与独立 Grant/Reference；
 - 所有终态和 unknown 证据保留 Phase 1.1 的可靠性边界。
 
-本文件只冻结数据模型和状态语义，不实现 Store/API/迁移。Store v3、API v3、ACP Adapter 边界和 v2→v3 迁移见 `docs/phase-2.1A.2-store-api-v3-design.md`。撤权模型、OD-11 方案 A 与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 和 `docs/phase-2.1A.5-authority-fence-decision-closure.md`。
+本文件只冻结数据模型和状态语义，不实现 Store/API/迁移。Store v3、API v3、ACP Adapter 边界和 v2→v3 迁移见 `docs/phase-2.1A.2-store-api-v3-design.md`。撤权模型、OD-11 方案 A 与 AD-06-R1/AD-12-R1 见 `docs/phase-2.1A.4-revocation-model-closure.md` 和 `docs/phase-2.1A.5-authority-fence-decision-closure.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`。

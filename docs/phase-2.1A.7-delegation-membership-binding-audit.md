@@ -109,34 +109,35 @@ DelegationAuthorityBinding:
 
 ### 2.1 直接 controller
 
-| Fence | 匹配字段 | 说明 |
+| Fence | 匹配规则 | 说明 |
 |---|---|---|
-| Principal fence | `Task.controllerPrincipalVersion == fence.sourceVersion` | 直接 User/Agent controller |
-| Membership fence | `Task.controllerMembershipVersion == fence.sourceVersion` | 直接 controller 的 Membership |
+| Principal fence | `Task.controllerPrincipalId == fencePrincipalId` **AND** `Task.controllerPrincipalVersion == sourceVersion` | global；不能只看 version |
+| Membership fence | `Task.workspaceId == fenceWorkspaceId` **AND** `Task.controllerPrincipalId == fencePrincipalId` **AND** `Task.controllerMembershipVersion == sourceVersion` | workspace + principal + version |
 
 ### 2.2 委托 controller（Task）
 
-| Fence | 匹配字段 | 说明 |
+| Fence | 匹配规则 | 说明 |
 |---|---|---|
-| Principal fence | `grantorPrincipalVersion == sourceVersion` **OR** `delegatePrincipalVersion == sourceVersion` | 两端都检查；不能只看 controller principal |
-| Membership fence | `grantorMembershipVersion == sourceVersion` **OR** `delegateMembershipVersion == sourceVersion` | 两端都检查；不能只看 controllerMembershipVersion |
+| Principal fence | `(grantorPrincipalId == fencePrincipalId AND grantorPrincipalVersion == sourceVersion)` **OR** `(delegatePrincipalId == fencePrincipalId AND delegatePrincipalVersion == sourceVersion)` | 两端都检查；ID 与 version 同时匹配 |
+| Membership fence | `Delegation.workspaceId == fenceWorkspaceId` **AND** `((grantorPrincipalId == fencePrincipalId AND grantorMembershipVersion == sourceVersion)` **OR** `(delegatePrincipalId == fencePrincipalId AND delegateMembershipVersion == sourceVersion))` | 两端都检查；workspace + principal + membership version |
 
-- “OR”表示任一端的 authority version 命中该 fence，该 Task 就是目标。
-- 但 identity 必须保留两端字段；不能因为一端命中就推断另一端有效。
-- 若 Delegation 记录缺失/version 不匹配：Task 进入 fail closed/frozen，不能按 active 处理。
+- “OR”表示任一端的 **ID + version** 同时命中该 fence，该 Task 就是目标。
+- 不能只比较 version；不同 Grantor/Delegate 的相同数字版本不能命中。
+- identity 必须保留两端字段；不能因为一端命中就推断另一端有效。
+- 若 Delegation 记录缺失、Workspace 不一致、grantor/delegate Principal ID 与引用不一致：Task 进入 fail closed/frozen，不能按 active 处理。
 
 ### 2.3 ArtifactGrant
 
 | Grant 关系 | Fence | 匹配 |
 |---|---|---|
-| snapshot-controller Grant（sourceDelegationId 非 null） | Principal fence | source Delegation 的 `grantorPrincipalVersion` OR `delegatePrincipalVersion` == sourceVersion |
-| snapshot-controller Grant | Membership fence | source Delegation 的 `grantorMembershipVersion` OR `delegateMembershipVersion` == sourceVersion |
-| snapshot-controller Grant | Delegation fence | `sourceDelegationVersion == sourceVersion` |
-| 任意 snapshot-controller Grant | grantee 失效 | `granteePrincipalVersion`/`granteeMembershipVersion` 与当前记录/对应 fence 匹配 |
+| snapshot-controller Grant（sourceDelegationId 非 null） | Principal fence | source Delegation workspace 一致；`(grantorPrincipalId==fencePrincipalId AND grantorPrincipalVersion==sourceVersion)` OR `(delegatePrincipalId==fencePrincipalId AND delegatePrincipalVersion==sourceVersion)` |
+| snapshot-controller Grant | Membership fence | Artifact workspace 与 source Delegation workspace 一致且等于 fenceWorkspaceId；`(grantorPrincipalId==fencePrincipalId AND grantorMembershipVersion==sourceVersion)` OR `(delegatePrincipalId==fencePrincipalId AND delegateMembershipVersion==sourceVersion)` |
+| snapshot-controller Grant | Delegation fence | `sourceDelegationId == fenceDelegationId` AND `sourceDelegationVersion == sourceVersion` AND workspace 一致 |
+| snapshot-controller Grant | grantee 失效 | Principal：`granteePrincipalId==fencePrincipalId AND granteePrincipalVersion==sourceVersion`；Membership：`Artifact.workspaceId==fenceWorkspaceId AND granteePrincipalId==fencePrincipalId AND granteeMembershipVersion==sourceVersion` |
 | explicit/requester Grant | Principal/Membership | live ACL；不进入 Fence 的物理 `revokedAt` 目标 |
 
 - `sourceDelegationVersion` 只证明 Delegation 记录版本，不证明 grantor/delegate 的 Principal/Membership 仍有效。
-- ArtifactGrant 的完整 target identity 必须包含 grantee binding + source Delegation 两端 binding。
+- ArtifactGrant 的完整 target identity 必须包含 artifact workspace + grantee binding + source Delegation 两端 binding。
 - 只检查 `sourceDelegationVersion` 不足以覆盖 Principal/Membership fence。
 
 ### 2.4 双 Fence 命中
@@ -155,12 +156,14 @@ DelegationAuthorityBinding:
 ```text
 TaskTargetIdentity:
   taskId
+  workspaceId
   controllerPrincipalId
   controllerPrincipalVersion
   controllerMembershipVersion
   controllerDelegationId
   controllerDelegationVersion
   resolvedDelegation?:
+    workspaceId
     grantorPrincipalId/Version
     grantorMembershipVersion
     delegatePrincipalId/Version
@@ -169,21 +172,24 @@ TaskTargetIdentity:
 
 匹配规则：
 
-- 直接 controller：`controllerPrincipalVersion` / `controllerMembershipVersion` 与 fence sourceVersion 比较。
-- 委托 controller：解析 Delegation 后，grantor/delegate 两端 Principal/Membership 分别比较。
-- 不能只看 Principal ID、Delegation ID 或 `controllerMembershipVersion`。
+- 直接 controller：`controllerPrincipalId` + `controllerPrincipalVersion`（Principal fence）；`workspaceId` + `controllerPrincipalId` + `controllerMembershipVersion`（Membership fence）。
+- 委托 controller：解析 Delegation 后，grantor/delegate 两端分别比较 Principal ID + Principal version、Workspace + Principal ID + Membership version。
+- 不能只看 Principal ID、Delegation ID、version 数值或 `controllerMembershipVersion`。
 
 ### 3.2 SnapshotGrantTargetIdentity
 
 ```text
 SnapshotGrantTargetIdentity:
   grantId
+  artifactId
+  workspaceId
   origin=task-snapshot-controller
   granteePrincipalId/Version
   granteeMembershipVersion
   sourceDelegationId
   sourceDelegationVersion
   resolvedSourceDelegation?:
+    workspaceId
     grantorPrincipalId/Version
     grantorMembershipVersion
     delegatePrincipalId/Version
@@ -192,14 +198,17 @@ SnapshotGrantTargetIdentity:
 
 匹配规则：
 
-- 先按 grantId 锁定具体 Grant；不能用一个新 Grant 替代旧 Grant。
-- 解析 source delegation；两端 Principal/Membership 都参与 Principal/Membership fence 匹配。
+- 先按 grantId 锁定具体 Grant；不能用新 Grant 替代旧 Grant。
+- 解析 source delegation；Workspace、grantor/delegate Principal ID、Principal/Membership version 都参与匹配。
 - `sourceDelegationVersion` 只用于版本 guard，不是完整授权证明。
-- 缺失/不匹配 -> fail closed。
+- 缺失/Workspace 不一致/ID 不一致/version 不一致 -> fail closed。
 
 ### 3.3 目标与 sourceVersion
 
-- 目标是否属于旧 Fence：任一相关 authority component 等于 fence.sourceVersion。
+- 目标属于旧 Fence 的判据是 **source identity + scope + authority version 同时匹配**，不是 version 相等。
+- Principal fence：对象中的 Principal ID 必须等于 sourceKey 的 principalId，对应 Principal version 必须等于 sourceVersion；scope=global。
+- Membership fence：对象 Workspace 必须等于 sourceKey 的 workspaceId，Principal ID 必须等于 sourceKey 的 principalId，对应 Membership version 必须等于 sourceVersion。
+- Delegation fence：delegationId 必须等于 sourceKey 的 delegationId，version 必须等于 sourceVersion，Workspace 一致。
 - 目标是否可跳过：只能是该具体对象的权威变更（transfer/revoke）改变了 binding。
 - 不能因为“当前 Membership=active”“当前 Principal=active”“新建 Delegation”就跳过旧目标。
 - 不能因为 new explicit Grant 存在就认为旧 snapshot Grant 已撤销。
@@ -208,7 +217,28 @@ SnapshotGrantTargetIdentity:
 
 ## 4. 十个以上场景
 
+### 4.0 匹配摘要
+
+| # | 场景 | Fence source identity | 对象 identity | version 关系 | 属于目标？ | effective / control | Reconcile 完成 |
+|---:|---|---|---|---|---|---|---|
+| 1 | User grantor Membership 撤销，delegate 仍有效 | `membership:ws:U` V | D.grantorPrincipalId=U、grantorMembershipVersion=V | 同 Workspace + 同 Principal + 同 version | 是（grantor 端） | Delegation 失效 / frozen | Task frozen + source Grant revoked；delegate 有效不改变 |
+| 2 | Agent delegate Membership 撤销，grantor 仍有效 | `membership:ws:A` V | D.delegatePrincipalId=A、delegateMembershipVersion=V | 同 Workspace + 同 Principal + 同 version | 是（delegate 端） | Delegation 失效 / frozen | Task frozen + Grant revoked；不能只看 grantor |
+| 3 | grantor Principal disable | `principal:U` V | D.grantorPrincipalId=U、grantorPrincipalVersion=V | 同 Principal + 同 version（global） | 是（grantor 端） | Delegation 失效 / frozen | Task frozen + Grant revoked |
+| 4 | delegate Principal disable | `principal:A` V | D.delegatePrincipalId=A、delegatePrincipalVersion=V | 同 Principal + 同 version（global） | 是（delegate 端） | Delegation 失效 / frozen | Task frozen + Grant revoked |
+| 5 | grantor re-add | `membership:ws:U` V | old D.grantorPrincipalId=U、grantorMembershipVersion=V；新 Membership V+2 | 旧对象 version 仍 V | 旧对象是；新对象不是 | 旧 Delegation 仍失效 / 旧 Task frozen | 旧 Task frozen + 旧 Grant revoked；新对象不属旧 Fence |
+| 6 | delegate re-add | `membership:ws:A` V | old D.delegatePrincipalId=A、delegateMembershipVersion=V；新 Membership V+2 | 旧对象 version 仍 V | 旧对象是；新对象不是 | 旧 Delegation 仍失效 / 旧 Task frozen | 旧 Task frozen + 旧 Grant revoked |
+| 7 | 新 Delegation 创建 | `delegation:D1` V | old Task.controllerDelegationId=D1、version=V；新 D2 | 旧 Task 仍 D1/V | 旧 Task 是；新 D2 不是 | 旧 Task frozen | 旧 Task frozen；只有 transfer 才绑定 D2 |
+| 8 | 撤权与 transfer 并发 | `delegation:D1` V | 旧 Task D1/V；transfer 后 taskId 新 binding | 旧 binding 同；新 binding 不同 | 旧 binding 是；新 binding 不是 | 新 controller active；旧 controller frozen | 旧 Fence 仅对旧 binding 条件跳过；旧 Grant 已撤销 |
+| 9 | Principal + Membership 双 Fence | `principal:U` V1 + `membership:ws:A` V2 | 对象同时含 U 的 Principal binding 与 A 的 Membership binding | 分别匹配各自 source identity/version | 属于两个 Fence | 并集拒绝 / frozen | 两个 Fence 都需完成；一个完成不清除另一个 |
+| 10 | source snapshot Grant 与 Task controller 同时受影响 | `delegation:D1` V | Task.controllerDelegationId=D1/V；Grant.sourceDelegationId=D1/V | 同 delegationId + 同 version + 同 Workspace | 两者都是 | Task frozen；Grant effective 无效 | Task frozen + Grant revoked；不能只处理一端 |
+| 11 | grantee Membership 撤销，Delegation 仍有效 | `membership:ws:A` V | Grant.granteePrincipalId=A、granteeMembershipVersion=V | 同 Workspace + 同 Principal + 同 version | snapshot Grant 是；explicit/requester 只 live ACL | Grant 失效 / 不适用 | snapshot Grant revoked；不能因 Delegation 有效而放行 |
+| 12 | 新 explicit Grant 与旧 snapshot Grant 并存 | `delegation:D1` V | old Grant.sourceDelegationId=D1/V；new explicit grantId 不同 | 旧 Grant 同 ID/version；新 Grant 不同 ID | 旧 Grant 是；新 Grant 不是 | 新 Grant 按独立 ACL；旧 Grant 无效 | 旧 Grant revoked；新 Grant 不需旧 Fence 处理 |
+
+详细小节补充 effective/control/Reconcile；identity/version 关系以本摘要表为准。
+
 ### 4.1 User grantor Membership 被撤销，Agent delegate Membership 仍有效
+
+> 以下详表只补充 effective/Reconcile；target 是否命中以 4.0 摘要的 source identity + scope + version 同时匹配为准。仅 version 相同不算命中。
 
 | 维度 | 结果 |
 |---|---|
@@ -388,6 +418,7 @@ SnapshotGrantTargetIdentity:
 | `phase-2.1A.3-implementation-readiness.md` | 双端 Membership、source delegation、batch/completion 已同步 | 一致 |
 | `phase-2.1A.2-design-review.md` | 双端 Membership、batch/completion 已同步 | 一致 |
 | `phase-2.0.3-implementation-constraints.md` | AD-12-R1 只约束源级 commit；batch/completion 是独立边界 | 一致 |
+| `phase-2.1A.8-authority-fence-source-identity-audit.md` | sourceKey/ID/Workspace/version 同时匹配；数值碰撞 fail closed | 一致 |
 
 检查结果：
 
@@ -435,6 +466,7 @@ SnapshotGrantTargetIdentity:
 - **OD-11：DECIDED（方案 A）。**
 - **AD-06-R1 / AD-12-R1：FROZEN。**
 - **A6 target identity/owner/事件分层：继续有效。**
+- **A8 source identity/scope/version 匹配：继续有效。**
 - Artifact owner、显式 Grant、Workspace Owner/Admin 审计权限、running Execution/unknown/interrupted/dispatch_intent 语义不变。
 - **OD-09：NEEDS_USER_DECISION（独立）。**
 - **代码实现：NOT APPROVED。**

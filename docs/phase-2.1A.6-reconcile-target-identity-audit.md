@@ -100,30 +100,39 @@
 ```text
 TaskTargetIdentity:
   taskId
+  workspaceId
+  controllerPrincipalId
   + controllerPrincipalVersion
   + controllerMembershipVersion
   + controllerDelegationId
   + controllerDelegationVersion
   + if controllerDelegationId != null:
       resolve Delegation(controllerDelegationId):
+        workspaceId
         grantorPrincipalId/Version
         grantorMembershipVersion
         delegatePrincipalId/Version
         delegateMembershipVersion
 
 SnapshotGrantTargetIdentity:
-  grantId + origin=task-snapshot-controller
+  grantId
+  artifactId
+  workspaceId
+  origin=task-snapshot-controller
   + granteePrincipalId + granteePrincipalVersion + granteeMembershipVersion
   + sourceDelegationId + sourceDelegationVersion
   + if sourceDelegationId != null:
       resolve Delegation(sourceDelegationId):
+        workspaceId
         grantorPrincipalId/Version
         grantorMembershipVersion
         delegatePrincipalId/Version
         delegateMembershipVersion
 ```
 
-- Delegation binding 通过权威 Delegation 记录解析；id/version 缺失或不匹配必须 fail closed，不能猜当前记录。
+- 匹配必须同时满足 source identity + scope + authority version；Principal ID/Delegation ID 必须等于 sourceKey 解析值，Membership 还必须 workspaceId 等于 fence workspace。
+- version 是局部版本；不同 Principal/Workspace 的相同数字版本不能误匹配。
+- Delegation binding 通过权威 Delegation 记录解析；id/workspace/version 缺失或不匹配必须 fail closed，不能猜当前记录。
 - 目标识别不能只看 Principal ID、当前 Membership、当前 Delegation 或“存在新授权”。
 - 旧 Task/Grant 的 identity 不变，就仍是旧 Fence 的目标。
 - 只有具体对象的权威 binding 已被显式操作改变，才能退出旧目标集。
@@ -202,7 +211,7 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 
 1. 从权威状态重新执行 scope 查询，覆盖全部 `TaskTargetIdentity`、`SnapshotGrantTargetIdentity`；Artifact owner 只做审计，不是物理目标。
 2. 每个目标 Task 已 `controlState=frozen`，或存在针对该具体 `taskId` 的权威 `transferController`，且同一事务写入新 binding、撤销该 Task 的旧 snapshot Grant（若有）。
-3. 每个目标 snapshot-controller Grant 已 `revokedAt`，或由针对该具体 `grantId`/`sourceDelegationId` 的显式 transfer/revoke 同事务撤销；若 `sourceDelegationId != null`，必须解析并校验 Delegation grantor/delegate 两端 Principal/Membership binding，不能只检查 sourceDelegationVersion。
+3. 每个目标 snapshot-controller Grant 已 `revokedAt`，或由针对该具体 `grantId`/`sourceDelegationId` 的显式 transfer/revoke 同事务撤销；若 `sourceDelegationId != null`，必须解析并校验 Delegation 的 Workspace、grantor/delegate Principal ID 与两端 Principal/Membership version，不能只检查 sourceDelegationVersion。
 4. Reconcile 未修改 `ownerPrincipalId`、未删除 Artifact。
 5. 扫描中发现的新对象若仍绑定旧 `sourceVersion`，必须纳入目标或 fail closed；不能跳过。
 6. 没有扫描错误、Store 错误、无法解析的引用。
@@ -271,6 +280,7 @@ Fence 只有同时满足以下条件才能标记 `completed`：
 | `phase-2.1A.4-revocation-model-closure.md` | Reconcile 条件更新仅 transfer；完成重扫；owner 审计；explicit/requester live ACL | 一致 |
 | `phase-2.1A.5-authority-fence-decision-closure.md` | 已按 P1-01..P1-05 修订；target identity；owner；源/派生事件；完成条件 | 一致 |
 | `phase-2.1A.7-delegation-membership-binding-audit.md` | 双端 Delegation binding；batch/completion 边界 | 一致 |
+| `phase-2.1A.8-authority-fence-source-identity-audit.md` | sourceKey/ID/Workspace/version 同时匹配；数值碰撞 fail closed | 一致 |
 
 未发现需要重新引入 AD-06/AD-12 同步物化的理由；未把 `stored controlState` 当作授权事实；未把 Artifact owner 与 Task controller 合并。
 

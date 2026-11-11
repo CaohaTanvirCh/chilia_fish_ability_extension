@@ -89,7 +89,7 @@ AuthorityRevocationFence:
   createdAt / completedAt
 ```
 
-- `sourceVersion` 是失效前版本（不是 revoke/disable 后的新 version），用于匹配仍绑定该版本的 Task/Grant：`controllerMembershipVersion=sourceVersion`、`controllerDelegationVersion=sourceVersion`、`controllerPrincipalVersion=sourceVersion`。commit 后源记录 version 递增。
+- `sourceVersion` 是失效前版本（不是 revoke/disable 后的新 version），但 version 只是局部版本；匹配必须同时校验 sourceKey 解析出的 Principal/Membership/Delegation ID、Workspace（适用时）和对应 authority version。commit 后源记录 version 递增。
 - 源记录当前 status/version 仍是当前授权判据；Membership re-add、Principal enable 产生新 version，旧 fence 不命中新对象，也不会让旧 Controller/Delegation 复活。旧 Task 因绑定旧 version 保持 frozen，直到显式 `transferController`。
 - `scope.kind=global` 明确表示所有 Workspace，不是“未指定”。
 - fence 是失效事实和 reconcile 游标；源记录当前 status/version 判断当前请求是否失权，fence 的旧 `sourceVersion` 判断 Task/Grant 的绑定是否已被失效。任一失效即拒绝。
@@ -234,14 +234,15 @@ AND effectiveControlState(task) == active
 | Delegation workspace | `controllerDelegationId=delegationId` 的 Task；`sourceDelegationId=delegationId` 的 snapshot controller Grant |
 
 - `origin=explicit`/`task-snapshot-requester` 的 Grant 不因 Membership/Principal/Delegation 撤权自动写 `revokedAt`；它们按当前 grantee/source 的 live ACL 立即 effective 无效/恢复，不做 controller authority version 绑定。显式 revoke 仍由 `updateArtifactGrant` 执行，不能借 Reconcile 扩大撤销范围；new explicit Grant 是不同 grantId，不能替代旧 snapshot Grant 的撤销义务。
-- 目标识别必须基于具体 Task/Grant ID + authority binding；委托目标必须解析 Delegation 的 grantor/delegate Principal/Membership binding，不能只看 controllerMembershipVersion 或 sourceDelegationVersion。
+- 目标识别必须基于具体 Task/Grant ID + Workspace + authority binding；匹配同时校验 Principal/Membership/Delegation ID、Workspace（适用时）和 version。委托目标必须解析 Delegation 的 grantor/delegate Principal/Membership binding，不能只看 controllerMembershipVersion 或 sourceDelegationVersion；source identity 规则见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`。
 - Artifact owner 关系只用于完整性审计；Reconcile 不得修改 `ownerPrincipalId`、不得删除 Artifact，也不得把 owner 自动转移列为 Fence 目标。
 
 ### 3.2 规则
 
 - 启动扫描 `status != completed` 的 fence（含 `failed`），按 `authorizationRevision`、`fenceId` 排序。
 - 每批只写可枚举对象；批次 commit 原子；`processedTaskIds`/`processedGrantIds` 是幂等进度，不是授权判据。
-- 条件更新：只冻结当前 controller 绑定仍匹配 fence `sourceVersion` 的 Task；只有显式 `transferController` 改变 binding 后才跳过，单纯 re-add/enable 不改变旧 Task binding，不得跳过。匹配规则：principal fence 看 `controllerPrincipalVersion` 或 delegation 的 grantor/delegate principal version；membership fence 看 `controllerMembershipVersion`（直接 controller）或 delegation 的 grantorMembershipVersion 与 delegateMembershipVersion（委托 controller，两端都检查）；delegation fence 看 `controllerDelegationVersion`。ArtifactGrant 的 `sourceDelegationId` 非 null 时必须解析完整 Delegation binding。
+- 匹配前先解析 `sourceKey`：`principal:<principalId>`（global）、`membership:<workspaceId>:<principalId>`（workspace）、`delegation:<delegationId>`（workspace）。version 是局部版本，不能替代 ID/Workspace 匹配。
+- 条件更新：只冻结当前 controller 绑定仍匹配 fence `sourceKey/sourceVersion` 的 Task；只有显式 `transferController` 改变 binding 后才跳过，单纯 re-add/enable 不改变旧 Task binding，不得跳过。Principal fence 要求 Principal ID == fencePrincipalId 且对应 version == sourceVersion；Membership fence 要求 workspaceId == fenceWorkspaceId、Principal ID == fencePrincipalId 且对应 Membership version == sourceVersion；Delegation fence 要求 delegationId == fenceDelegationId 且 version == sourceVersion，并校验 Workspace。委托目标分别检查 grantor/delegate 两端的 ID/Workspace/version；ArtifactGrant 的 sourceDelegationId 非 null 时必须解析完整 Delegation binding。
 - 已 frozen/已 revoked 的对象跳过，不追加重复派生 Event；源级事件在撤权 commit，`controller.frozen`/`artifact.grant_revoked`/`authorization.reconciled` 是 Reconcile 派生事件。
 - 崩溃恢复：从进度继续；未记录批次可重做；每个 batch commit 原子；batch commit 与 completion commit 分离，不要求所有批次同一事务。
 - 完成：从权威状态重新扫描具体 Task/Grant target identity，全部目标 frozen/revoked，或存在针对具体对象的显式 transfer/revoke；不能仅凭 processed ids 乐观完成。`completed` 只表示当前 fence/sourceVersion/scope 的物化完成。completion commit 单独提交 `status=completed`、`completedAt`、`authorization.reconciled`；失败保持 pending/retry，不回滚已完成批次、不重复派生事件。
@@ -250,7 +251,7 @@ AND effectiveControlState(task) == active
 - `failed` 不是终态；retry 包括 `pending/reconciling/failed`。
 - 多 fence 并发：一个 fence 完成不能清除另一个；effective 始终取并集。
 - Membership role 降低/变更使 version 变化时，旧 controller 立即 frozen；该路径不强制创建 fence，`Task.controlState` cache 可保持旧值，但 API/写入使用 effective。角色变更仍需审计事件 `membership.role_changed`。
-- 完成条件、重叠 Fence、失败恢复和 delegate 覆盖的完整规则见 `docs/phase-2.1A.5-authority-fence-decision-closure.md` 第 3 节；target identity 与操作影响矩阵见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`；Delegation 双端 Membership 与 batch/completion 边界见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；不能仅凭 `processedTaskIds`/`processedGrantIds` 标记完成。
+- 完成条件、重叠 Fence、失败恢复和 delegate 覆盖的完整规则见 `docs/phase-2.1A.5-authority-fence-decision-closure.md` 第 3 节；target identity 与操作影响矩阵见 `docs/phase-2.1A.6-reconcile-target-identity-audit.md`；Delegation 双端 Membership 与 batch/completion 边界见 `docs/phase-2.1A.7-delegation-membership-binding-audit.md`；sourceKey/ID/Workspace/version 匹配见 `docs/phase-2.1A.8-authority-fence-source-identity-audit.md`；不能仅凭 `processedTaskIds`/`processedGrantIds` 标记完成。
 - 扫描中发现的新对象若仍绑定旧 `sourceVersion`，必须纳入旧 Fence 或 fail closed；不能当作新对象跳过。
 
 ### 3.3 Controller 转移与撤权
